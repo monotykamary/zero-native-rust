@@ -1,7 +1,8 @@
 use crate::geometry::RectF;
 use crate::platform::{
     self, AppInfo, BridgeMessage, Event as PlatformEvent, Surface, WebViewSource, WindowId,
-    WindowInfo, WindowState, WindowCreateOptions, WindowOptions, NullPlatform,
+    WindowInfo, WindowState, WindowCreateOptions, WindowOptions, NullPlatform, PlatformHost,
+    PlatformError,
 };
 use crate::bridge::{self, Dispatcher, Policy as BridgePolicy, Request, Source};
 use crate::security;
@@ -33,12 +34,17 @@ pub enum RuntimeError {
     InvalidJsonEventDetail,
     NoSpaceLeft,
     UnsupportedService,
+    PlatformError(PlatformError),
 }
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:?}", self) }
 }
 impl std::error::Error for RuntimeError {}
+
+impl From<PlatformError> for RuntimeError {
+    fn from(e: PlatformError) -> Self { RuntimeError::PlatformError(e) }
+}
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -89,13 +95,14 @@ pub struct Options {
     pub js_window_api: bool,
 }
 
+#[derive(Clone)]
 struct RuntimeWindow {
     info: WindowInfo,
     source: Option<WebViewSource>,
 }
 
 pub struct Runtime {
-    pub null_platform: NullPlatform,
+    pub host: Box<dyn PlatformHost>,
     pub surface: Surface,
     pub windows: Vec<RuntimeWindow>,
     pub next_window_id: WindowId,
@@ -109,11 +116,61 @@ pub struct Runtime {
     automation_windows: Vec<snapshot::Window>,
 }
 
-impl Runtime {
-    pub fn new(null_platform: NullPlatform, options: Options) -> Self {
-        let surface = null_platform.surface_value.clone();
+// Manual Clone for Runtime: Box<dyn PlatformHost> cannot be Clone,
+// so we provide a limited clone that replaces the host with NullPlatform.
+impl Clone for Runtime {
+    fn clone(&self) -> Self {
         Self {
-            null_platform, surface,
+            host: Box::new(NullPlatform::with_options(
+                self.surface.clone(),
+                platform::WebEngine::System,
+                self.host.app_info().clone(),
+            )),
+            surface: self.surface.clone(),
+            windows: self.windows.clone(),
+            next_window_id: self.next_window_id,
+            invalidated: self.invalidated,
+            frame_index: self.frame_index,
+            command_count: self.command_count,
+            dirty_regions: self.dirty_regions.clone(),
+            last_diagnostics: self.last_diagnostics,
+            loaded_source: self.loaded_source.clone(),
+            options: Options {
+                trace_sink: None,
+                log_path: self.options.log_path.clone(),
+                extensions: self.options.extensions.clone(),
+                bridge: self.options.bridge.clone(),
+                builtin_bridge: self.options.builtin_bridge.clone(),
+                security: self.options.security.clone(),
+                automation: self.options.automation.clone(),
+                window_state_store: self.options.window_state_store.clone(),
+                js_window_api: self.options.js_window_api,
+            },
+            automation_windows: self.automation_windows.clone(),
+        }
+    }
+}
+
+impl Runtime {
+    pub fn new(host: impl PlatformHost + 'static, options: Options) -> Self {
+        let surface = host.surface();
+        Self {
+            host: Box::new(host), surface,
+            windows: Vec::with_capacity(MAX_WINDOWS),
+            next_window_id: 2, invalidated: true,
+            frame_index: 0, command_count: 0,
+            dirty_regions: Vec::with_capacity(8),
+            last_diagnostics: FrameDiagnostics::default(),
+            loaded_source: None, options,
+            automation_windows: Vec::with_capacity(snapshot::MAX_WINDOWS),
+        }
+    }
+
+    /// Construct with a pre-boxed host (avoids monomorphisation bloat).
+    pub fn from_boxed(host: Box<dyn PlatformHost>, options: Options) -> Self {
+        let surface = host.surface();
+        Self {
+            host, surface,
             windows: Vec::with_capacity(MAX_WINDOWS),
             next_window_id: 2, invalidated: true,
             frame_index: 0, command_count: 0,
@@ -127,10 +184,8 @@ impl Runtime {
     pub fn invalidate(&mut self) { self.invalidated = true; }
 
     pub fn run(&mut self, app: &mut App) -> Result<(), RuntimeError> {
-        // Drive the platform event loop by collecting events first, then dispatching.
-        // This avoids the &mut self borrow conflict of closure-capturing self.
         let mut events: Vec<PlatformEvent> = Vec::new();
-        self.null_platform.run_event_loop(&mut |event| { events.push(event); });
+        self.host.run(&mut |event| { events.push(event); });
         for event in events {
             self.dispatch_platform_event(app, event)?;
         }
@@ -145,22 +200,27 @@ impl Runtime {
         if self.find_window_index_by_label(&create_opts.label).is_some() { return Err(RuntimeError::DuplicateWindowLabel); }
         if self.windows.len() >= MAX_WINDOWS { return Err(RuntimeError::WindowLimitReached); }
 
+        let win_opts = create_opts.window_options(id, &create_opts.label);
+        let info = self.host.create_window(&win_opts)?;
+
+        // Runtime tracks its own copy of the info, independent of the host.
         let index = self.windows.len();
-        let info = WindowInfo {
-            id, label: create_opts.label.clone(), title: create_opts.title.clone(),
+        let runtime_info = WindowInfo {
+            id, label: create_opts.label.clone(), title: info.title.clone(),
             frame: create_opts.default_frame, scale_factor: self.surface.scale_factor,
             open: true, focused: self.windows.is_empty(),
         };
-        self.windows.push(RuntimeWindow { info, source: Some(source) });
+        self.windows.push(RuntimeWindow { info: runtime_info.clone(), source: Some(source) });
         self.next_window_id = self.next_window_id.max(id + 1);
         self.invalidated = true;
-        Ok(self.windows[index].info.clone())
+        Ok(runtime_info)
     }
 
     pub fn list_windows_vec(&self) -> Vec<WindowInfo> { self.windows.iter().map(|w| w.info.clone()).collect() }
 
     pub fn focus_window(&mut self, window_id: WindowId) -> Result<(), RuntimeError> {
         let index = self.find_window_index_by_id(window_id).ok_or(RuntimeError::MissingWindowSource)?;
+        self.host.focus_window(window_id)?;
         self.set_focused_index(index);
         self.invalidated = true;
         Ok(())
@@ -168,6 +228,7 @@ impl Runtime {
 
     pub fn close_window(&mut self, window_id: WindowId) -> Result<(), RuntimeError> {
         let _ = self.find_window_index_by_id(window_id).ok_or(RuntimeError::MissingWindowSource)?;
+        self.host.close_window(window_id)?;
         if let Some(w) = self.windows.iter_mut().find(|w| w.info.id == window_id) {
             w.info.open = false; w.info.focused = false;
         }
@@ -184,7 +245,8 @@ impl Runtime {
                 self.invalidated = true;
             }
             PlatformEvent::SurfaceResized(surface) => {
-                self.surface = surface;
+                self.surface = surface.clone();
+                self.host.set_surface(surface);
                 self.invalidated = true;
             }
             PlatformEvent::WindowFrameChanged(state) => { self.update_window_state(&state); self.invalidated = true; }
@@ -225,21 +287,21 @@ impl Runtime {
     fn load_startup_windows(&mut self, app: &App) {
         let source = app.web_view_source();
         self.loaded_source = Some(source);
-        // Create the default main window (id=1)
-        let count = self.null_platform.app_info.startup_window_count();
+        self.host.load_webview(self.loaded_source.as_ref().unwrap());
+        let count = self.host.app_info().startup_window_count();
         for index in 0..count {
-            let window = self.null_platform.app_info.resolved_startup_window(index);
+            let window = self.host.app_info().resolved_startup_window(index);
             if self.find_window_index_by_id(window.id).is_none() && self.windows.len() < MAX_WINDOWS {
                 let info = WindowInfo {
                     id: window.id,
                     label: window.label.clone(),
-                    title: window.resolved_title(&self.null_platform.app_info.app_name).to_string(),
+                    title: window.resolved_title(&self.host.app_info().app_name).to_string(),
                     frame: window.default_frame,
                     scale_factor: self.surface.scale_factor,
                     open: true,
                     focused: index == 0,
                 };
-                self.windows.push(RuntimeWindow { info, source: self.loaded_source.clone() });
+                self.windows.push(RuntimeWindow { info: info.clone(), source: self.loaded_source.clone() });
                 self.next_window_id = self.next_window_id.max(window.id + 1);
             }
         }
@@ -260,11 +322,11 @@ impl Runtime {
         let mut response_buffer = vec![0u8; bridge::MAX_RESPONSE_BYTES];
         let source = Source { origin: message.origin.clone(), window_id: message.window_id };
         let response_len = dispatcher.dispatch(&message.bytes, source, &mut response_buffer);
-        self.null_platform.record_bridge_response(message.window_id, &response_buffer[..response_len]);
+        self.host.complete_window_bridge(message.window_id, &response_buffer[..response_len]);
     }
 
     fn complete_bridge_response(&mut self, window_id: WindowId, response: &[u8]) {
-        self.null_platform.record_bridge_response(window_id, response);
+        self.host.complete_window_bridge(window_id, response);
         if let Some(ref server) = self.options.automation { let _ = server.publish_bridge_response(response); }
     }
 
@@ -412,17 +474,17 @@ fn write_window_json_to_writer(window: &WindowInfo, output: &mut [u8]) -> usize 
     cursor.position() as usize
 }
 
-pub struct TestHarness { pub runtime: Runtime, pub null_platform: NullPlatform }
+pub struct TestHarness { pub runtime: Runtime }
 
 impl TestHarness {
     pub fn new(surface: Surface) -> Self {
         let null_platform = NullPlatform::new(surface.clone());
-        let runtime = Runtime::new(null_platform.clone(), Options {
+        let runtime = Runtime::new(null_platform, Options {
             trace_sink: None, log_path: None, extensions: None, bridge: None,
             builtin_bridge: BridgePolicy::default(), security: security::Policy::default(),
             automation: None, window_state_store: None, js_window_api: false,
         });
-        Self { runtime, null_platform }
+        Self { runtime }
     }
 
     pub fn start(&mut self, app: &mut App) -> Result<(), RuntimeError> {
@@ -465,7 +527,6 @@ mod tests {
         let mut harness = TestHarness::new(Surface::default());
         let mut app = App::simple("test", WebViewSource::html("hi"));
         harness.start(&mut app).unwrap();
-        // Window id=1 already created by load_startup_windows, so duplicate should fail
         assert!(matches!(harness.runtime.create_window(WindowCreateOptions { id: 1, label: "other".into(), ..Default::default() }), Err(RuntimeError::DuplicateWindowId)));
     }
 
@@ -489,7 +550,9 @@ mod tests {
             bytes: r#"{"id":"1","command":"zero-native.window.create","payload":{"label":"palette","title":"Palette","width":320,"height":240}}"#.into(),
             origin: "zero://inline".into(), window_id: 1,
         })).unwrap();
-        assert!(harness.runtime.null_platform.last_bridge_response().contains("\"ok\":true"));
+        // Verify through NullPlatform downcast
+        let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
+        assert!(np.last_bridge_response().contains("\"ok\":true"));
     }
 
     #[test]
@@ -502,6 +565,7 @@ mod tests {
             bytes: r#"{"id":"1","command":"zero-native.window.list","payload":null}"#.into(),
             origin: "https://evil.com".into(), window_id: 1,
         })).unwrap();
-        assert!(harness.runtime.null_platform.last_bridge_response().contains("\"permission_denied\""));
+        let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
+        assert!(np.last_bridge_response().contains("\"permission_denied\""));
     }
 }

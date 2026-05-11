@@ -50,7 +50,13 @@ pub struct Module {
     pub hooks: ModuleHooks,
 }
 
-#[derive(Debug)]
+impl Clone for Module {
+    fn clone(&self) -> Self {
+        Self { info: self.info.clone(), context: Box::new(()), hooks: self.hooks.clone() }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ModuleRegistry {
     pub modules: Vec<Module>,
 }

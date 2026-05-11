@@ -1,5 +1,5 @@
 use crate::runtime::{App, RuntimeError};
-use crate::platform::{self, NullPlatform, Surface};
+use crate::platform::{self, NullPlatform, Surface, PlatformHost};
 
 pub struct EmbeddedApp {
     pub app: App,

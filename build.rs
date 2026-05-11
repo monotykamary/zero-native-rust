@@ -22,6 +22,11 @@ fn main() {
                 .flag("UniformTypeIdentifiers")
                 .compile("appkit_host");
 
+            println!("cargo:rustc-link-lib=framework=AppKit");
+            println!("cargo:rustc-link-lib=framework=WebKit");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+            println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
+
             let bindings = bindgen::Builder::default()
                 .header(src_dir.join("macos/appkit_host.h").to_str().unwrap())
                 .header(src_dir.join("macos/automation_host.h").to_str().unwrap())
