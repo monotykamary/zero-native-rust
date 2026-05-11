@@ -36,13 +36,19 @@ cargo test
 
 | Command | Description |
 |---------|-------------|
-| `doctor` | Print platform diagnostics |
+| `init` | Create a new app (`--frontend next\|vite\|react\|svelte\|vue`) |
+| `doctor` | Print platform diagnostics (`--strict`, `--manifest`, `--web-engine`) |
 | `validate` | Validate app.zon manifest |
-| `init` | Create a new app (stub) |
-| `bundle-assets` | Bundle app assets (stub) |
-| `package` | Create packaged artifact (stub) |
-| `cef` | Manage Chromium Embedded Framework (stub) |
-| `dev` | Run dev server + native shell (stub) |
+| `bundle-assets` | Bundle app assets into output directory |
+| `package` | Create packaged artifact (macOS .app, Windows, Linux, iOS, Android) |
+| `package-windows` | Shortcut for `package --target windows` |
+| `package-linux` | Shortcut for `package --target linux` |
+| `package-ios` | Shortcut for `package --target ios` |
+| `package-android` | Shortcut for `package --target android` |
+| `cef` | Manage Chromium Embedded Framework (`install`, `path`, `doctor`) |
+| `dev` | Run frontend dev server + native shell |
+| `automate` | Automation protocol (`list`, `snapshot`, `reload`, `wait`, `bridge`) |
+| `version` | Print version |
 
 ## Modules
 
@@ -66,7 +72,7 @@ cargo test
 | `js` | 60 lines | 50 lines | ✅ Complete |
 | `frontend` | 50 lines | 40 lines | ✅ Complete |
 | `embed` | 120 lines | 55 lines | ✅ C ABI exports |
-| CLI tooling | 5000+ lines | 100 lines | 🚧 Stub only |
+| CLI tooling | 5000+ lines | 3700 lines | ✅ Complete |
 
 ## FFI bindings
 
