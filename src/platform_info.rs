@@ -130,6 +130,10 @@ impl HostInfo {
             env_vars: Vec::new(),
         }
     }
+
+    pub fn probe() -> Self {
+        Self::detect(Target::current())
+    }
 }
 
 #[derive(Debug, Clone)]

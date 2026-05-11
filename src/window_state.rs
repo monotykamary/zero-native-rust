@@ -1,6 +1,15 @@
 use crate::platform::{WindowState, WindowId};
 use crate::geometry::RectF;
 
+pub const MAX_SERIALIZED_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Error {
+    InvalidFormat,
+    NoSpaceLeft,
+    IoError,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pub state_dir: String,
@@ -21,9 +30,25 @@ impl Store {
         Ok(Vec::new())
     }
 
-    pub fn load_window(&self, label: &str, buffer: &mut [u8]) -> std::io::Result<Option<WindowState>> {
+    pub fn load_window(&self, label: &str, _buffer: &mut [u8]) -> std::io::Result<Option<WindowState>> {
         let windows = self.load_windows()?;
         Ok(windows.into_iter().find(|w| w.label == label))
+    }
+
+    pub fn load_window_into(&self, label: &str, _storage_buffer: &mut [u8]) -> std::io::Result<Option<WindowState>> {
+        self.load_window(label, &mut [])
+    }
+
+    pub fn load_windows_into(&self, output: &mut Vec<WindowState>, _storage_buffer: &mut [u8]) -> usize {
+        match self.load_windows() {
+            Ok(windows) => {
+                let count = windows.len();
+                output.clear();
+                output.extend(windows);
+                count
+            }
+            Err(_) => 0,
+        }
     }
 }
 

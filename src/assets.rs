@@ -209,6 +209,51 @@ impl RuntimeAssets {
     pub fn find(&self, id: &str) -> Option<&Asset> { self.manifest.find_by_id(id) }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdError {
+    EmptyId,
+    AbsoluteId,
+    EmptySegment,
+    ParentSegment,
+    CurrentSegment,
+}
+
+pub fn validate_id(id: &str) -> Result<(), IdError> {
+    if id.is_empty() { return Err(IdError::EmptyId); }
+    if id.starts_with('/') { return Err(IdError::AbsoluteId); }
+    for segment in id.split('/') {
+        if segment.is_empty() { return Err(IdError::EmptySegment); }
+        if segment == ".." { return Err(IdError::ParentSegment); }
+        if segment == "." { return Err(IdError::CurrentSegment); }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestError {
+    InvalidId,
+    InvalidPath,
+    UnsortedManifest,
+    DuplicateId,
+}
+
+pub fn validate(manifest: &Manifest) -> Result<(), ManifestError> {
+    for (i, asset) in manifest.assets.iter().enumerate() {
+        validate_id(&asset.id).map_err(|_| ManifestError::InvalidId)?;
+        if asset.source_path.is_empty() || asset.source_path.starts_with('/') { return Err(ManifestError::InvalidPath); }
+        if asset.bundle_path.is_empty() || asset.bundle_path.starts_with('/') { return Err(ManifestError::InvalidPath); }
+        if i > 0 {
+            let prev = &manifest.assets[i - 1];
+            if prev.id > asset.id { return Err(ManifestError::UnsortedManifest); }
+            if prev.id == asset.id && prev.bundle_path > asset.bundle_path { return Err(ManifestError::UnsortedManifest); }
+            if prev.id == asset.id && prev.bundle_path == asset.bundle_path { return Err(ManifestError::DuplicateId); }
+        }
+    }
+    Ok(())
+}
+
+pub fn parse_hash_hex(input: &[u8]) -> Result<Hash, HashError> { Hash::parse_hex(input) }
+
 #[cfg(test)]
 mod tests {
     use super::*;

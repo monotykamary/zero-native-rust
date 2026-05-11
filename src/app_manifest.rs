@@ -480,6 +480,54 @@ fn permission_eql(a: &Permission, b: &Permission) -> bool {
     if a.kind == PermissionKind::Custom { a.custom_name == b.custom_name } else { true }
 }
 
+pub fn parse_manifest(source: &str) -> Result<Manifest, ValidationError> {
+    let mut identity = AppIdentity { id: String::new(), name: String::new(), display_name: None, organization: None, homepage: None };
+    let mut version = Version { major: 0, minor: 0, patch: 0, pre: None, build: None };
+    let mut icons: Vec<Icon> = Vec::new();
+    let mut permissions: Vec<Permission> = Vec::new();
+    let mut capabilities: Vec<Capability> = Vec::new();
+    let mut bridge = BridgeConfig::default();
+    let mut frontend: Option<FrontendConfig> = None;
+    let mut security = SecurityConfig::default();
+    let mut platforms: Vec<PlatformSettings> = Vec::new();
+    let mut windows: Vec<Window> = Vec::new();
+    let mut cef = CefConfig::default();
+    let mut package = PackageMetadata::default();
+    let mut updates = UpdateConfig::default();
+
+    // Parse ZON-like fields
+    if let Some(val) = crate::json::string_field_unescaped(source, ".id") { identity.id = val; }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".name") { identity.name = val; }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".display_name") { identity.display_name = Some(val); }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".organization") { identity.organization = Some(val); }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".homepage") { identity.homepage = Some(val); }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".version") {
+        let parts: Vec<&str> = val.split('.').collect();
+        if parts.len() >= 3 {
+            version.major = parts[0].parse().unwrap_or(0);
+            version.minor = parts[1].parse().unwrap_or(0);
+            version.patch = parts[2].parse().unwrap_or(0);
+        }
+    }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".web_engine") {
+        // web_engine string — ignored, stored in package kind
+        let _ = val;
+    }
+    if let Some(val) = crate::json::string_field_unescaped(source, ".cef.dir") { cef.dir = val; }
+    if let Some(_) = crate::json::field_value(source, "cef.auto_install") { cef.auto_install = true; }
+
+    let manifest = Manifest {
+        identity, version, icons, permissions, capabilities, bridge,
+        frontend, security, platforms, windows, cef, package, updates,
+    };
+    Ok(manifest)
+}
+
+pub fn read_manifest(path: &str) -> Result<Manifest, std::io::Error> {
+    let source = std::fs::read_to_string(path)?;
+    parse_manifest(&source).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "manifest validation failed"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
