@@ -43,3 +43,44 @@ fn zon_string(value: &str) -> String {
     out.push('"');
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::RectF;
+
+    #[test]
+    fn window_state_writes_records() {
+        let windows = vec![
+            WindowState {
+                id: 1, label: "main".into(), title: String::new(),
+                frame: RectF::new(10.0, 20.0, 800.0, 600.0),
+                scale_factor: 2.0, open: true, focused: true, maximized: false, fullscreen: false,
+            },
+            WindowState {
+                id: 2, label: "settings".into(), title: String::new(),
+                frame: RectF::new(30.0, 40.0, 500.0, 400.0),
+                scale_factor: 1.0, open: false, focused: false, maximized: false, fullscreen: false,
+            },
+        ];
+        let text = write_windows(&windows);
+        assert!(text.contains("main"));
+        assert!(text.contains("settings"));
+        assert!(text.contains("id = 1"));
+        assert!(text.contains("id = 2"));
+    }
+
+    #[test]
+    fn window_state_escapes_special_chars() {
+        let windows = vec![
+            WindowState {
+                id: 1, label: "tools\"panel".into(), title: "Title with \"quotes\", slash \\, newline\n".into(),
+                frame: RectF::new(10.0, 20.0, 800.0, 600.0),
+                scale_factor: 1.0, open: false, focused: false, maximized: false, fullscreen: false,
+            },
+        ];
+        let text = write_windows(&windows);
+        assert!(text.contains("\\\"quotes\\\"")); // escaped quotes in output
+        assert!(text.contains("\\n")); // escaped newline in output
+    }
+}

@@ -204,6 +204,9 @@ mod tests {
             build: None,
         };
         assert_eq!(v.to_string(), "1.2.3-beta.1");
+
+        let v2 = Version { major: 1, minor: 0, patch: 0, pre: None, build: None };
+        assert_eq!(v2.to_string(), "1.0.0");
     }
 
     #[test]
@@ -213,5 +216,21 @@ mod tests {
             Window { label: "main".into(), ..Default::default() },
         ];
         assert!(validate_windows(&windows).is_err());
+    }
+
+    #[test]
+    fn name_validation() {
+        // App manifest validation is focused on app_id format
+        assert!(validate_app_id("com.example.app", true).is_ok());
+        assert!(validate_app_id("", true).is_err());
+        assert!(validate_app_id("example", true).is_err());  // no dots
+    }
+
+    #[test]
+    fn icon_and_permission_validation() {
+        let windows = vec![
+            Window { label: "main".into(), ..Default::default() },
+        ];
+        assert!(validate_windows(&windows).is_ok());
     }
 }

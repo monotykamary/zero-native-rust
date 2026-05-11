@@ -247,6 +247,103 @@ mod tests {
             source: WebViewSource::html("<h1>Hello</h1>"),
         };
         harness.start(&mut app).unwrap();
-        assert_eq!(self::WebViewSourceKind::Html, harness.runtime.loaded_source.as_ref().unwrap().kind);
+        assert_eq!(WebViewSourceKind::Html, harness.runtime.loaded_source.as_ref().unwrap().kind);
+        assert_eq!("<h1>Hello</h1>", harness.runtime.loaded_source.as_ref().unwrap().bytes);
+    }
+
+    #[test]
+    fn runtime_creates_lists_and_closes_windows() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+
+        let w1 = runtime.create_window(1, "main", "Main", RectF::new(0.0, 0.0, 800.0, 600.0), None).unwrap();
+        assert_eq!(1, w1.id);
+        assert_eq!("main", w1.label);
+
+        let w2 = runtime.create_window(2, "settings", "Settings", RectF::new(0.0, 0.0, 500.0, 400.0), None).unwrap();
+        assert_eq!(2, w2.id);
+
+        let windows = runtime.list_windows();
+        assert_eq!(2, windows.len());
+    }
+
+    #[test]
+    fn runtime_rejects_duplicate_window_id() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+
+        let _ = runtime.create_window(1, "main", "Main", RectF::new(0.0, 0.0, 800.0, 600.0), None).unwrap();
+        assert!(matches!(runtime.create_window(1, "other", "Other", RectF::ZERO, None), Err(RuntimeError::DuplicateWindowId)));
+    }
+
+    #[test]
+    fn runtime_rejects_duplicate_window_label() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+
+        let _ = runtime.create_window(1, "main", "Main", RectF::ZERO, None).unwrap();
+        assert!(matches!(runtime.create_window(2, "main", "Main 2", RectF::ZERO, None), Err(RuntimeError::DuplicateWindowLabel)));
+    }
+
+    #[test]
+    fn runtime_rejects_empty_label() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+
+        assert!(matches!(runtime.create_window(1, "", "", RectF::ZERO, None), Err(RuntimeError::InvalidWindowOptions)));
+    }
+
+    #[test]
+    fn runtime_dispatches_bridge_messages() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+
+        let msg = BridgeMessage { bytes: "{\"id\":\"1\"}".into(), origin: "zero://inline".into(), window_id: 1 };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::BridgeMessage(msg)).unwrap();
+        assert_eq!(1, runtime.frame_diagnostics().command_count);
+    }
+
+    #[test]
+    fn runtime_updates_window_state() {
+        let mut runtime = Runtime::new(Options {
+            trace_sink: None, log_path: None, extensions: None, bridge: None,
+            builtin_bridge: BridgePolicy::default(), security: security::Policy::default(), js_window_api: false,
+        });
+        let mut app = App { name: "test".into(), source: WebViewSource::html("hi") };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::AppStart);
+        let _ = runtime.create_window(1, "main", "Main", RectF::new(0.0, 0.0, 800.0, 600.0), None).unwrap();
+
+        let state = WindowState {
+            id: 1, label: "main".into(), title: "Updated".into(),
+            frame: RectF::new(10.0, 20.0, 900.0, 700.0), scale_factor: 2.0,
+            open: true, focused: true, maximized: false, fullscreen: false,
+        };
+        let _ = runtime.dispatch_platform_event(&mut app, Event::WindowFrameChanged(state)).unwrap();
+
+        let windows = runtime.list_windows();
+        assert_eq!(1, windows.len());
+        assert_eq!(RectF::new(10.0, 20.0, 900.0, 700.0), windows[0].frame);
+        assert_eq!(2.0, windows[0].scale_factor);
+        assert_eq!("Updated", windows[0].title);
     }
 }

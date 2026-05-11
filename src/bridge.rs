@@ -223,7 +223,7 @@ impl Policy {
             Some(c) => c,
             None => return false,
         };
-        if !security::has_permissions(&self.permissions, &cmd_policy.permissions.iter().map(|s| s.as_str()).collect::<Vec<_>>()) {
+        if !security::has_permissions(&self.permissions.iter().map(|s| s.as_str()).collect::<Vec<_>>(), &cmd_policy.permissions.iter().map(|s| s.as_str()).collect::<Vec<_>>()) {
             return false;
         }
         if cmd_policy.origins.is_empty() { return true; }

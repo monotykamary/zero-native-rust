@@ -124,3 +124,71 @@ pub enum ModuleError {
     MissingDependency,
     ModuleFailed,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_validates_duplicate_module_ids() {
+        let registry = ModuleRegistry {
+            modules: vec![
+                Module {
+                    info: ModuleInfo { id: 1, name: "a".into(), dependencies: vec![], capabilities: vec![] },
+                    context: Box::new(()),
+                    hooks: ModuleHooks { start_fn: None, stop_fn: None, command_fn: None },
+                },
+                Module {
+                    info: ModuleInfo { id: 1, name: "b".into(), dependencies: vec![], capabilities: vec![] },
+                    context: Box::new(()),
+                    hooks: ModuleHooks { start_fn: None, stop_fn: None, command_fn: None },
+                },
+            ],
+        };
+        assert_eq!(Err(ModuleError::DuplicateModule), registry.validate());
+    }
+
+    #[test]
+    fn registry_validates_dependencies() {
+        let registry = ModuleRegistry {
+            modules: vec![
+                Module {
+                    info: ModuleInfo { id: 1, name: "a".into(), dependencies: vec![42], capabilities: vec![] },
+                    context: Box::new(()),
+                    hooks: ModuleHooks { start_fn: None, stop_fn: None, command_fn: None },
+                },
+            ],
+        };
+        assert_eq!(Err(ModuleError::MissingDependency), registry.validate());
+    }
+
+    #[test]
+    fn registry_has_capability() {
+        let registry = ModuleRegistry {
+            modules: vec![
+                Module {
+                    info: ModuleInfo { id: 1, name: "a".into(), dependencies: vec![], capabilities: vec![Capability { kind: CapabilityKind::NativeModule, name: "test".into() }] },
+                    context: Box::new(()),
+                    hooks: ModuleHooks { start_fn: None, stop_fn: None, command_fn: None },
+                },
+            ],
+        };
+        assert!(registry.has_capability(CapabilityKind::NativeModule));
+        assert!(!registry.has_capability(CapabilityKind::Filesystem));
+    }
+
+    #[test]
+    fn registry_find_by_id() {
+        let registry = ModuleRegistry {
+            modules: vec![
+                Module {
+                    info: ModuleInfo { id: 1, name: "a".into(), dependencies: vec![], capabilities: vec![] },
+                    context: Box::new(()),
+                    hooks: ModuleHooks { start_fn: None, stop_fn: None, command_fn: None },
+                },
+            ],
+        };
+        assert!(registry.find_by_id(1).is_some());
+        assert!(registry.find_by_id(99).is_none());
+    }
+}

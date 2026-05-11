@@ -59,12 +59,22 @@ pub enum DisplayServer {
     Unknown,
 }
 
-pub fn detect_display_server(_env: &[(String, String)], platform: Platform) -> DisplayServer {
+pub fn detect_display_server(env: &[(String, String)], platform: Platform) -> DisplayServer {
     match platform {
         Platform::MacOS => DisplayServer::AppKit,
         Platform::Windows => DisplayServer::Win32,
         Platform::IOS => DisplayServer::UIKit,
-        Platform::Linux => DisplayServer::None, // would check env vars
+        Platform::Linux => {
+            for (key, value) in env {
+                if key == "WAYLAND_DISPLAY" && !value.is_empty() {
+                    return DisplayServer::Wayland;
+                }
+                if key == "DISPLAY" && !value.is_empty() {
+                    return DisplayServer::X11;
+                }
+            }
+            DisplayServer::None
+        }
         _ => DisplayServer::Unknown,
     }
 }
@@ -81,5 +91,27 @@ impl Target {
             os: Platform::current(),
             arch: Arch::current(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_target_maps_builtin_values() {
+        let target = Target::current();
+        assert_ne!(Platform::Unknown, target.os);
+        assert_ne!(Arch::Unknown, target.arch);
+    }
+
+    #[test]
+    fn display_server_detection() {
+        assert_eq!(DisplayServer::Wayland, detect_display_server(
+            &vec![("WAYLAND_DISPLAY".into(), "wayland-0".into())], Platform::Linux));
+        assert_eq!(DisplayServer::X11, detect_display_server(
+            &vec![("DISPLAY".into(), ":0".into())], Platform::Linux));
+        assert_eq!(DisplayServer::None, detect_display_server(&[], Platform::Linux));
+        assert_eq!(DisplayServer::AppKit, detect_display_server(&[], Platform::MacOS));
     }
 }

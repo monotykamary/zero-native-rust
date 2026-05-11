@@ -299,3 +299,59 @@ impl NullPlatform {
         self.bridge_response_window_id = window_id;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_platform_emits_lifecycle_events() {
+        let events: Vec<&'static str> = vec![
+            Event::AppStart.name(),
+            Event::SurfaceResized(Surface::default()).name(),
+            Event::WindowFrameChanged(WindowState::default()).name(),
+            Event::FrameRequested.name(),
+            Event::AppShutdown.name(),
+        ];
+        assert_eq!(5, events.len());
+        assert_eq!("app_start", events[0]);
+        assert_eq!("surface_resized", events[1]);
+        assert_eq!("window_frame_changed", events[2]);
+        assert_eq!("frame_requested", events[3]);
+        assert_eq!("app_shutdown", events[4]);
+    }
+
+    #[test]
+    fn null_platform_records_loaded_webview_source() {
+        let mut np = NullPlatform::with_engine(Surface::default(), WebEngine::Chromium);
+        np.app_info.app_name = "Demo".into();
+        np.app_info.window_title = "Demo Window".into();
+        np.loaded_source = Some(WebViewSource::html("<h1>Hello</h1>"));
+
+        assert_eq!(WebEngine::Chromium, np.web_engine);
+        assert_eq!("Demo Window", np.app_info.resolved_window_title());
+        let source = np.loaded_source.as_ref().unwrap();
+        assert_eq!(WebViewSourceKind::Html, source.kind);
+        assert_eq!("<h1>Hello</h1>", source.bytes);
+    }
+
+    #[test]
+    fn null_platform_records_bridge_response_window_routing() {
+        let mut np = NullPlatform::new(Surface::default());
+        np.record_bridge_response(7, b"{\"ok\":true}");
+        assert_eq!(7, np.last_bridge_response_window_id());
+        assert_eq!(b"{\"ok\":true}" as &[u8], np.last_bridge_response());
+    }
+
+    #[test]
+    fn webview_asset_source_records_production_bundle_options() {
+        let source = WebViewSource::assets(WebViewAssetSource {
+            root_path: "dist".into(),
+            entry: "index.html".into(),
+            ..WebViewAssetSource::default()
+        });
+        assert_eq!(WebViewSourceKind::Assets, source.kind);
+        let opts = source.asset_options.as_ref().unwrap();
+        assert_eq!("dist", opts.root_path);
+    }
+}

@@ -113,3 +113,47 @@ pub fn is_valid_value(raw: &str) -> bool {
         _ => false,
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_field_extracts_value() {
+        let mut storage = Vec::new();
+        let input = r#"{"title":"Hello","nested":{"title":"wrong"}}"#;
+        let value = string_field(input, "title", &mut storage);
+        assert!(value.is_some());
+        assert_eq!("Hello", value.unwrap());
+    }
+
+    #[test]
+    fn validates_json_values() {
+        assert!(is_valid_value("{\"ok\":true}"));
+        assert!(!is_valid_value("{\"ok\":true"));
+        assert!(is_valid_value("null"));
+        assert!(is_valid_value("42"));
+    }
+
+    #[test]
+    fn bool_field_extract() {
+        let input = r#"{"active":true}"#;
+        assert_eq!(Some(true), bool_field(input, "active"));
+        assert_eq!(None, bool_field(input, "missing"));
+    }
+
+    #[test]
+    fn number_field_extract() {
+        let input = r#"{"count":42}"#;
+        assert_eq!(Some(42.0), number_field(input, "count"));
+    }
+
+    #[test]
+    fn write_json_string_escapes() {
+        assert_eq!(r#""hello""#, write_json_string("hello"));
+        assert!(write_json_string("a\"b").contains("\\\""));
+        assert!(write_json_string("a\\b").contains("\\\\"));
+        assert!(write_json_string("a\nb").contains("\\n"));
+    }
+}

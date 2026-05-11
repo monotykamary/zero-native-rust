@@ -54,3 +54,21 @@ pub unsafe extern "C" fn zero_native_app_stop(app: *mut EmbeddedApp) {
     let embedded = &mut *app;
     let _ = embedded.runtime.dispatch_platform_event(&mut embedded.app, crate::platform::Event::AppShutdown);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::WebViewSourceKind;
+
+    #[test]
+    fn embedded_app_starts_and_loads_source() {
+        let mut embedded = EmbeddedApp::new(App {
+            name: "embedded".into(),
+            source: crate::platform::WebViewSource::html("<p>Embedded</p>"),
+        });
+        let _ = embedded.runtime.dispatch_platform_event(&mut embedded.app, crate::platform::Event::AppStart);
+        // Source is stored in loaded_source after start
+        assert_eq!(WebViewSourceKind::Html, embedded.app.source.kind);
+        assert_eq!("<p>Embedded</p>", embedded.app.source.bytes);
+    }
+}

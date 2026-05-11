@@ -39,3 +39,30 @@ pub fn production_source(config: &Config) -> WebViewSource {
         spa_fallback: config.spa_fallback,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::WebViewSourceKind;
+
+    #[test]
+    fn frontend_source_prefers_dev_server_url() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ZERO_NATIVE_FRONTEND_URL".into(), "http://127.0.0.1:5173/".into());
+        let config = Config::default();
+        let source = source_from_env(&env, &config);
+        assert_eq!(WebViewSourceKind::Url, source.kind);
+        assert_eq!("http://127.0.0.1:5173/", source.bytes);
+    }
+
+    #[test]
+    fn frontend_source_falls_back_to_production_assets() {
+        let env = std::collections::HashMap::new();
+        let config = Config { dist: "frontend/dist".into(), entry: "app.html".into(), ..Default::default() };
+        let source = source_from_env(&env, &config);
+        assert_eq!(WebViewSourceKind::Assets, source.kind);
+        let opts = source.asset_options.as_ref().unwrap();
+        assert_eq!("frontend/dist", opts.root_path);
+        assert_eq!("app.html", opts.entry);
+    }
+}

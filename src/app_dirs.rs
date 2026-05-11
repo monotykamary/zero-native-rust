@@ -192,3 +192,80 @@ pub enum AppDirError {
     UnsupportedPlatform,
     NoSpaceLeft,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_name_validation() {
+        assert!(validate_app_name("MyApp").is_ok());
+        assert!(validate_app_name("my-app").is_ok());
+        assert!(validate_app_name("").is_err());
+        assert!(validate_app_name(".").is_err());
+        assert!(validate_app_name("..").is_err());
+        assert!(validate_app_name("app/name").is_err());
+        assert!(validate_app_name("app\\name").is_err());
+    }
+
+    #[test]
+    fn linux_xdg_paths_use_explicit_env() {
+        let env = Env {
+            home: Some("/home/user".into()),
+            xdg_config_home: Some("/custom/config".into()),
+            xdg_cache_home: Some("/custom/cache".into()),
+            xdg_data_home: Some("/custom/data".into()),
+            xdg_state_home: Some("/custom/state".into()),
+            ..Default::default()
+        };
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        let config = resolve_one(&app, Platform::Linux, &env, DirKind::Config).unwrap();
+        assert!(config.contains("/custom/config/test"));
+    }
+
+    #[test]
+    fn linux_falls_back_to_home_defaults() {
+        let env = Env {
+            home: Some("/home/user".into()),
+            ..Default::default()
+        };
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        let config = resolve_one(&app, Platform::Linux, &env, DirKind::Config).unwrap();
+        assert!(config.contains(".config"));
+    }
+
+    #[test]
+    fn macos_library_paths_resolve_from_home() {
+        let env = Env { home: Some("/Users/alice".into()), ..Default::default() };
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        let data = resolve_one(&app, Platform::MacOS, &env, DirKind::Data).unwrap();
+        assert!(data.contains("Library/Application Support"));
+    }
+
+    #[test]
+    fn windows_paths_resolve_from_appdata() {
+        let env = Env {
+            local_app_data: Some("C:\\Users\\alice\\AppData\\Local".into()),
+            app_data: Some("C:\\Users\\alice\\AppData\\Roaming".into()),
+            ..Default::default()
+        };
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        let config = resolve_one(&app, Platform::Windows, &env, DirKind::Config).unwrap();
+        assert!(config.contains("AppData"));
+    }
+
+    #[test]
+    fn missing_required_env_produces_error() {
+        let env = Env::default(); // no home
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        assert!(resolve_one(&app, Platform::Linux, &env, DirKind::Config).is_err());
+    }
+
+    #[test]
+    fn ios_android_unsupported() {
+        let env = Env { home: Some("/home".into()), ..Default::default() };
+        let app = AppInfo { name: "test".into(), organization: None, qualifier: None };
+        assert!(resolve_one(&app, Platform::IOS, &env, DirKind::Config).is_err());
+        assert!(resolve_one(&app, Platform::Android, &env, DirKind::Config).is_err());
+    }
+}

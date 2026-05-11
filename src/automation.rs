@@ -48,3 +48,29 @@ pub enum CommandError {
     InvalidCommand,
     CommandTooLarge,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_parse_reload_and_wait() {
+        let reload = Command::parse("reload").unwrap();
+        assert_eq!(Action::Reload, reload.action);
+
+        let wait = Command::parse("wait frame").unwrap();
+        assert_eq!(Action::Wait, wait.action);
+        assert_eq!("frame", wait.value);
+
+        let bridge = Command::parse("bridge {\"id\":\"1\",\"command\":\"native.ping\"}").unwrap();
+        assert_eq!(Action::Bridge, bridge.action);
+        assert!(bridge.value.contains("native.ping"));
+    }
+
+    #[test]
+    fn command_parse_rejects_invalid() {
+        assert!(Command::parse("").is_err());
+        assert!(Command::parse("bridge").is_err()); // bridge requires payload
+        assert!(Command::parse("unknown").is_err());
+    }
+}

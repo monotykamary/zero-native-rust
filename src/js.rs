@@ -6,7 +6,7 @@ pub enum ValueKind {
     String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
     Boolean(bool),
@@ -45,4 +45,34 @@ impl Bridge {
 pub enum JsError {
     EngineUnavailable,
     InvalidCall,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_bridge_reports_unavailable_engine() {
+        let bridge = Bridge { hooks: RuntimeHooks { call_fn: None } };
+        assert_eq!(Err(JsError::EngineUnavailable), bridge.call(Call {
+            module: "app".into(),
+            function: "main".into(),
+            args: vec![],
+        }));
+    }
+
+    #[test]
+    fn bridge_validates_call_names() {
+        let bridge = Bridge { hooks: RuntimeHooks { call_fn: None } };
+        assert_eq!(Err(JsError::InvalidCall), bridge.call(Call {
+            module: "".into(),
+            function: "main".into(),
+            args: vec![],
+        }));
+        assert_eq!(Err(JsError::InvalidCall), bridge.call(Call {
+            module: "app".into(),
+            function: "".into(),
+            args: vec![],
+        }));
+    }
 }

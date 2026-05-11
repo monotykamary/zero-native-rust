@@ -131,6 +131,7 @@ pub fn infer_media_type(path: &str) -> Option<&'static str> {
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
         "mp4" => "video/mp4",
+        "webm" => "video/webm",
         _ => return None,
     })
 }
@@ -209,13 +210,90 @@ mod tests {
         let hex = h.to_hex();
         let expected = b"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         assert_eq!(&hex[..], &expected[..]);
+
+        let h2 = sha256_hash(b"abc");
+        let hex2 = h2.to_hex();
+        let expected2 = b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(&hex2[..], &expected2[..]);
     }
 
     #[test]
     fn infer_kind_common() {
         assert_eq!(infer_kind("icons/app.PNG"), AssetKind::Image);
         assert_eq!(infer_kind("fonts/inter.woff2"), AssetKind::Font);
+        assert_eq!(infer_kind("copy/readme.md"), AssetKind::Text);
         assert_eq!(infer_kind("data/app.json"), AssetKind::Json);
+        assert_eq!(infer_kind("locales/en/messages.ftl"), AssetKind::Localization);
+        assert_eq!(infer_kind("sounds/click.wav"), AssetKind::Audio);
+        assert_eq!(infer_kind("video/intro.webm"), AssetKind::Video);
+        assert_eq!(infer_kind("data/blob.bin"), AssetKind::Binary);
         assert_eq!(infer_kind("data/blob.unknown"), AssetKind::Unknown);
+    }
+
+    #[test]
+    #[test]
+    fn infer_media_type_common() {
+        assert_eq!(Some("image/png"), infer_media_type("icons/app.png"));
+        assert_eq!(Some("font/woff2"), infer_media_type("fonts/inter.woff2"));
+        assert_eq!(Some("application/json"), infer_media_type("data/app.json"));
+        assert_eq!(Some("audio/wav"), infer_media_type("sounds/click.wav"));
+        assert_eq!(Some("video/webm"), infer_media_type("video/intro.webm"));
+        assert_eq!(None, infer_media_type("data/blob.unknown"));
+    }
+
+    #[test]
+    fn hash_hex_parsing_round_trips() {
+        let hash = sha256_hash(b"abc");
+        let hex = hash.to_hex();
+        let restored = Hash::parse_hex(&hex).unwrap();
+        assert!(Hash::eql(&hash, &restored));
+
+        assert!(Hash::parse_hex(b"abc").is_err()); // too short
+        let mut bad = hex;
+        bad[0] = b'z';
+        assert!(Hash::parse_hex(&bad).is_err());
+    }
+
+    #[test]
+    fn path_normalization() {
+        let mut buf = [0u8; 64];
+        let result = normalize_path(&mut buf, b"images\\icons/app.png").unwrap();
+        assert_eq!(b"images/icons/app.png", result);
+
+        assert!(normalize_path(&mut buf, b"").is_err());
+        assert!(normalize_path(&mut buf, b"/assets/icon.png").is_err());
+        assert!(normalize_path(&mut buf, b"assets//icon.png").is_err());
+        assert!(normalize_path(&mut buf, b"assets/./icon.png").is_err());
+        assert!(normalize_path(&mut buf, b"assets/../icon.png").is_err());
+    }
+
+    #[test]
+    fn manifest_lookup() {
+        let manifest = Manifest {
+            assets: vec![
+                Asset {
+                    id: "fonts/inter".into(),
+                    kind: AssetKind::Font,
+                    source_path: "assets/fonts/inter.woff2".into(),
+                    bundle_path: "fonts/inter.woff2".into(),
+                    byte_len: 42,
+                    hash: Hash::zero(),
+                    media_type: Some("font/woff2".into()),
+                },
+                Asset {
+                    id: "icons/app".into(),
+                    kind: AssetKind::Image,
+                    source_path: "assets/icons/app.png".into(),
+                    bundle_path: "icons/app.png".into(),
+                    byte_len: 64,
+                    hash: Hash::zero(),
+                    media_type: Some("image/png".into()),
+                },
+            ],
+        };
+        assert_eq!("icons/app", manifest.find_by_id("icons/app").unwrap().id);
+        assert_eq!("fonts/inter", manifest.find_by_bundle_path("fonts/inter.woff2").unwrap().id);
+        assert!(manifest.find_by_id("missing").is_none());
+        assert!(manifest.find_by_bundle_path("missing.png").is_none());
     }
 }
