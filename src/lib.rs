@@ -17,6 +17,7 @@ pub mod window_state;
 pub mod runtime;
 pub mod embed;
 pub mod json;
+pub mod tooling;
 
 pub use runtime::Runtime;
 pub use runtime::App;
