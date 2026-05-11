@@ -458,3 +458,265 @@ fn package_target_tag(target: PackageTarget) -> &'static str {
         PackageTarget::Android => "android",
     }
 }
+
+pub fn artifact_name(metadata: &manifest::Metadata, target: PackageTarget, optimize: &str) -> String {
+    format!("{}-{}-{}-{}{}",
+        metadata.name,
+        metadata.version,
+        package_target_tag(target),
+        optimize,
+        artifact_suffix(target),
+    )
+}
+
+fn artifact_suffix(target: PackageTarget) -> &'static str {
+    match target {
+        PackageTarget::MacOS => ".app",
+        PackageTarget::Windows | PackageTarget::Linux | PackageTarget::IOS | PackageTarget::Android => "",
+    }
+}
+
+fn archive_suffix(target: PackageTarget) -> &'static str {
+    match target {
+        PackageTarget::MacOS => ".dmg",
+        PackageTarget::Windows => ".zip",
+        PackageTarget::Linux => ".tar.gz",
+        PackageTarget::IOS | PackageTarget::Android => "",
+    }
+}
+
+pub fn archive_path(options: &PackageOptions) -> String {
+    let dir = std::path::Path::new(&options.output_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    format!("{}/{}-{}-{}-{}{}",
+        dir,
+        options.metadata.name,
+        options.metadata.version,
+        package_target_tag(options.target),
+        options.optimize,
+        archive_suffix(options.target),
+    )
+}
+
+pub fn create_local_package(output_path: &str) -> Result<PackageStats, String> {
+    let metadata = manifest::Metadata {
+        id: "dev.zero_native.local".into(),
+        name: "zero-native-local".into(),
+        display_name: None,
+        version: "0.1.0".into(),
+        icons: vec![],
+        platforms: vec![],
+        permissions: vec![],
+        capabilities: vec![],
+        bridge_commands: vec![],
+        web_engine: "system".into(),
+        cef: manifest::CefConfig::default(),
+        frontend: None,
+        security: manifest::SecurityMetadata::default(),
+        windows: vec![],
+    };
+    create_macos_app(&PackageOptions {
+        metadata,
+        target: PackageTarget::MacOS,
+        optimize: "Debug".into(),
+        output_path: output_path.to_string(),
+        binary_path: None,
+        assets_dir: "assets".into(),
+        web_engine: web_engine::Engine::System,
+        cef_dir: super::cef::DEFAULT_MACOS_DIR.into(),
+        signing: codesign::SigningConfig::default(),
+        archive: false,
+    })
+}
+
+pub fn embed_header() -> &'static str {
+    r##"#pragma once
+#include <stdint.h>
+#include <stddef.h>
+void *zero_native_app_create(void);
+void zero_native_app_destroy(void *app);
+void zero_native_app_start(void *app);
+void zero_native_app_stop(void *app);
+void zero_native_app_resize(void *app, float width, float height, float scale, void *surface);
+void zero_native_app_touch(void *app, uint64_t id, int phase, float x, float y, float pressure);
+void zero_native_app_frame(void *app);
+void zero_native_app_set_asset_root(void *app, const char *path, uintptr_t len);
+uintptr_t zero_native_app_last_command_count(void *app);
+"##
+}
+
+pub fn linux_desktop_entry(metadata: &manifest::Metadata) -> String {
+    let display_name = desktop_entry_escape(metadata.display_name_or_name());
+    let executable = desktop_entry_escape(&metadata.name);
+    format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nIcon=app-icon\nCategories=Utility;\nComment={} desktop application\n",
+        display_name, executable, display_name,
+    )
+}
+
+fn desktop_entry_escape(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            c if (c as u32) < 0x20 && c != '\t' => {}
+            '\n' | '\r' | '\t' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+pub fn write_report(dir: &std::path::Path, options: &PackageOptions, executable_name: &str, asset_count: usize) -> Result<(), String> {
+    let artifact = zon_string(std::path::Path::new(&options.output_path).file_name().unwrap_or_default().to_string_lossy().as_ref());
+    let target = zon_string(package_target_tag(options.target));
+    let version = zon_string(&options.metadata.version);
+    let app_id = zon_string(&options.metadata.id);
+    let executable = zon_string(executable_name);
+    let optimize = zon_string(&options.optimize);
+    let web_engine_str = zon_string(match options.web_engine { web_engine::Engine::System => "system", web_engine::Engine::Chromium => "chromium" });
+    let signing_str = zon_string(match options.signing.mode { codesign::SigningMode::None => "none", codesign::SigningMode::Adhoc => "adhoc", codesign::SigningMode::Identity => "identity" });
+
+    let mut capabilities_lines = String::new();
+    for cap in &options.metadata.capabilities {
+        capabilities_lines.push_str(&format!("    {},\n", zon_string(cap)));
+    }
+
+    let frontend_lines = if let Some(ref frontend) = options.metadata.frontend {
+        format!("  .frontend = .{{ .dist = {}, .entry = {}, .spa_fallback = {} }},\n",
+            zon_string(&frontend.dist), zon_string(&frontend.entry), frontend.spa_fallback)
+    } else {
+        String::new()
+    };
+
+    let report = format!(
+        ".{{\n\
+          .artifact = {artifact},\n\
+          .target = {target},\n\
+          .version = {version},\n\
+          .app_id = {app_id},\n\
+          .executable = {executable},\n\
+          .optimize = {optimize},\n\
+          .web_engine = {web_engine_str},\n\
+          .signing = {signing_str},\n\
+          .asset_count = {asset_count},\n\
+{frontend_lines}\
+          .capabilities = .{{\n\
+{capabilities_lines}\
+          }},\n\
+        }}\n"
+    );
+    std::fs::write(dir.join("package-manifest.zon"), &report).map_err(|e| e.to_string())
+}
+
+fn zon_string(value: &str) -> String {
+    let mut out = String::new();
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""  ),
+            '\\' => out.push_str("\\\\"  ),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\x{:02x}", c as u8)),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+pub fn create_ios_skeleton(output_path: &str) -> Result<PackageStats, String> {
+    let output = Path::new(output_path);
+    fs::create_dir_all(output.join("zero-nativeHost")).map_err(|e| e.to_string())?;
+    fs::write(output.join("README.md"), "iOS zero-native host skeleton. Link libzero-native.a and call the functions in zero-nativeHost/zero_native.h from the view controller.\n").map_err(|e| e.to_string())?;
+    fs::write(output.join("Info.plist"), ios_info_plist()).map_err(|e| e.to_string())?;
+    fs::write(output.join("zero-nativeHost/ZeroNativeHostViewController.swift"), ios_view_controller()).map_err(|e| e.to_string())?;
+    fs::write(output.join("zero-nativeHost/zero_native.h"), embed_header()).map_err(|e| e.to_string())?;
+    Ok(PackageStats { path: output_path.to_string(), target: PackageTarget::IOS, signing_mode: codesign::SigningMode::None, asset_count: 0, web_engine: web_engine::Engine::System, archive_path: None })
+}
+
+pub fn create_android_skeleton(output_path: &str) -> Result<PackageStats, String> {
+    let output = Path::new(output_path);
+    fs::create_dir_all(output.join("app/src/main/java/dev/zero_native")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(output.join("app/src/main/cpp")).map_err(|e| e.to_string())?;
+    fs::write(output.join("README.md"), "Android zero-native host skeleton. Copy libzero-native.a into the NDK build and wire the JNI bridge in app/src/main/cpp.\n").map_err(|e| e.to_string())?;
+    fs::write(output.join("settings.gradle"), "pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\ndependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }\nrootProject.name = 'zero-nativeHost'\ninclude ':app'\n").map_err(|e| e.to_string())?;
+    fs::write(output.join("app/build.gradle"), "plugins { id 'com.android.application' version '8.5.0' }\n\nandroid { namespace 'dev.zero_native'; compileSdk 35\n    defaultConfig { applicationId 'dev.zero_native'; minSdk 26; targetSdk 35; versionCode 1; versionName '0.1.0' }\n}\n").map_err(|e| e.to_string())?;
+    fs::write(output.join("app/src/main/AndroidManifest.xml"), android_manifest()).map_err(|e| e.to_string())?;
+    fs::write(output.join("app/src/main/java/dev/zero_native/MainActivity.kt"), android_activity()).map_err(|e| e.to_string())?;
+    fs::write(output.join("app/src/main/cpp/zero_native_jni.c"), android_jni()).map_err(|e| e.to_string())?;
+    fs::write(output.join("app/src/main/cpp/zero_native.h"), embed_header()).map_err(|e| e.to_string())?;
+    Ok(PackageStats { path: output_path.to_string(), target: PackageTarget::Android, signing_mode: codesign::SigningMode::None, asset_count: 0, web_engine: web_engine::Engine::System, archive_path: None })
+}
+
+fn ios_view_controller() -> &'static str {
+    r#"import UIKit
+import WebKit
+
+final class ZeroNativeHostViewController: UIViewController {
+    private let webView = WKWebView(frame: .zero)
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        webView.frame = view.bounds
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(webView)
+    }
+}
+"#
+}
+
+fn android_manifest() -> &'static str {
+    r#"<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@style/AppTheme"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity></application></manifest>"#
+}
+
+fn android_activity() -> &'static str {
+    r#"package dev.zero_native
+
+import android.app.Activity
+import android.os.Bundle
+import android.view.MotionEvent
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+
+class MainActivity : Activity(), SurfaceHolder.Callback {
+    private var app: Long = 0
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val surface = SurfaceView(this)
+        surface.holder.addCallback(this)
+        setContentView(surface)
+        app = nativeCreate()
+        nativeStart(app)
+    }
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { nativeResize(app, width.toFloat(), height.toFloat(), 1f, holder.surface) }
+    override fun surfaceCreated(holder: SurfaceHolder) {}
+    override fun surfaceDestroyed(holder: SurfaceHolder) { nativeStop(app) }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        nativeTouch(app, event.getPointerId(0).toLong(), event.actionMasked, event.x, event.y, event.pressure)
+        nativeFrame(app)
+        return true
+    }
+    external fun nativeCreate(): Long
+    external fun nativeStart(app: Long)
+    external fun nativeStop(app: Long)
+    external fun nativeResize(app: Long, width: Float, height: Float, scale: Float, surface: Any)
+    external fun nativeTouch(app: Long, id: Long, phase: Int, x: Float, y: Float, pressure: Float)
+    external fun nativeFrame(app: Long)
+}
+"#
+}
+
+fn android_jni() -> &'static str {
+    r#"#include <jni.h>
+#include "zero_native.h"
+JNIEXPORT jlong JNICALL Java_dev_zero_1native_MainActivity_nativeCreate(JNIEnv *env, jobject self) { (void)env; (void)self; return (jlong)zero_native_app_create(); }
+JNIEXPORT void JNICALL Java_dev_zero_1native_MainActivity_nativeStart(JNIEnv *env, jobject self, jlong app) { (void)env; (void)self; zero_native_app_start((void*)app); }
+JNIEXPORT void JNICALL Java_dev_zero_1native_MainActivity_nativeStop(JNIEnv *env, jobject self, jlong app) { (void)env; (void)self; zero_native_app_stop((void*)app); zero_native_app_destroy((void*)app); }
+JNIEXPORT void JNICALL Java_dev_zero_1native_MainActivity_nativeResize(JNIEnv *env, jobject self, jlong app, jfloat w, jfloat h, jfloat scale, jobject surface) { (void)env; (void)self; zero_native_app_resize((void*)app, w, h, scale, surface); }
+JNIEXPORT void JNICALL Java_dev_zero_1native_MainActivity_nativeTouch(JNIEnv *env, jobject self, jlong app, jlong id, jint phase, jfloat x, jfloat y, jfloat pressure) { (void)env; (void)self; zero_native_app_touch((void*)app, (uint64_t)id, phase, x, y, pressure); }
+JNIEXPORT void JNICALL Java_dev_zero_1native_MainActivity_nativeFrame(JNIEnv *env, jobject self, jlong app) { (void)env; (void)self; zero_native_app_frame((void*)app); }
+"#
+}

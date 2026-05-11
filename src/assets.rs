@@ -200,6 +200,15 @@ pub enum PathError {
     NoSpaceLeft,
 }
 
+pub struct RuntimeAssets {
+    pub manifest: Manifest,
+}
+
+impl RuntimeAssets {
+    pub fn init(manifest: Manifest) -> Self { Self { manifest } }
+    pub fn find(&self, id: &str) -> Option<&Asset> { self.manifest.find_by_id(id) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +311,24 @@ mod tests {
         assert!(normalize_path(&mut buf, b"assets//icon.png").is_err());
         assert!(normalize_path(&mut buf, b"assets/./icon.png").is_err());
         assert!(normalize_path(&mut buf, b"assets/../icon.png").is_err());
+    }
+
+    #[test]
+    fn runtime_assets_init_and_find() {
+        let assets = vec![
+            Asset {
+                id: "index.html".into(),
+                kind: AssetKind::Text,
+                source_path: "assets/index.html".into(),
+                bundle_path: "index.html".into(),
+                byte_len: 0,
+                hash: Hash::zero(),
+                media_type: None,
+            },
+        ];
+        let manifest = Manifest { assets };
+        let runtime = RuntimeAssets::init(manifest);
+        assert!(runtime.find("index.html").is_some());
+        assert!(runtime.find("missing").is_none());
     }
 }

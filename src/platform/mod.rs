@@ -10,11 +10,17 @@ pub mod windows;
 
 pub type WindowId = u64;
 pub const MAX_WINDOWS: usize = 16;
+pub const MAX_WINDOW_LABEL_BYTES: usize = 64;
+pub const MAX_WINDOW_TITLE_BYTES: usize = 128;
+pub const MAX_WINDOW_SOURCE_BYTES: usize = 4096;
 pub const MAX_DIALOG_PATH_BYTES: usize = 4096;
 pub const MAX_DIALOG_PATHS_BYTES: usize = 16 * 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebEngine { System, Chromium }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend { Null, MacOS, Linux, Windows }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebViewSourceKind { Html, Url, Assets }
