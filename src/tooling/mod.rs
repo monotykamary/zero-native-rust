@@ -8,3 +8,4 @@ pub mod dev;
 pub mod web_engine;
 pub mod codesign;
 pub mod automation_cli;
+pub mod raw_manifest;

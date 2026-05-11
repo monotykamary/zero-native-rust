@@ -170,8 +170,39 @@ fn resolve_windows(app_name: &str, env: &Env, kind: DirKind) -> Result<String, A
     }
 }
 
+pub fn current_platform() -> Platform {
+    if cfg!(target_os = "macos") {
+        Platform::MacOS
+    } else if cfg!(target_os = "windows") {
+        Platform::Windows
+    } else if cfg!(target_os = "linux") {
+        Platform::Linux
+    } else if cfg!(target_os = "ios") {
+        Platform::IOS
+    } else if cfg!(target_os = "android") {
+        Platform::Android
+    } else {
+        Platform::Unknown
+    }
+}
+
+pub fn platform_separator(platform: Platform) -> char {
+    match platform {
+        Platform::Windows => '\\',
+        _ => '/',
+    }
+}
+
 fn join(parts: &[&str]) -> String {
-    parts.join(std::path::MAIN_SEPARATOR.to_string().as_str())
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    parts.join(&sep)
+}
+
+pub fn join_paths(parts: &[&str]) -> String {
+    let platform = current_platform();
+    let sep = platform_separator(platform);
+    let filtered: Vec<&str> = parts.iter().filter(|p| !p.is_empty()).copied().collect();
+    filtered.join(&sep.to_string())
 }
 
 pub fn validate_app_name(name: &str) -> Result<(), AppDirError> {

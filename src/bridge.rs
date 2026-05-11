@@ -255,6 +255,18 @@ pub struct Dispatcher {
     pub registry: Registry,
 }
 
+impl Default for Dispatcher {
+    fn default() -> Self {
+        Self { policy: Policy::default(), registry: Registry { handlers: Vec::new() } }
+    }
+}
+
+impl Clone for Dispatcher {
+    fn clone(&self) -> Self {
+        Self { policy: self.policy.clone(), registry: Registry { handlers: Vec::new() } }
+    }
+}
+
 impl Dispatcher {
     pub fn dispatch(&self, raw: &str, source: Source, output: &mut [u8]) -> usize {
         if raw.len() > MAX_MESSAGE_BYTES {
