@@ -394,7 +394,7 @@ fn format_field_value_json(value: &FieldValue) -> String {
 }
 
 fn json_string(value: &str) -> String {
-    crate::bridge::json_string(value)
+    crate::bridge::write_json_string(value)
 }
 
 #[cfg(test)]

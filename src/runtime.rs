@@ -1,8 +1,8 @@
-use crate::geometry::RectF;
+use crate::geometry::{RectF, SizeF};
 use crate::platform::{
     self, AppInfo, BridgeMessage, Event as PlatformEvent, Surface, WebViewSource, WindowId,
     WindowInfo, WindowState, WindowCreateOptions, WindowOptions, NullPlatform, PlatformHost,
-    PlatformError,
+    PlatformError, MessageDialogStyle, MessageDialogResult,
 };
 use crate::bridge::{self, Dispatcher, Policy as BridgePolicy, Request, Source};
 use crate::security;
@@ -34,6 +34,7 @@ pub enum RuntimeError {
     InvalidJsonEventDetail,
     NoSpaceLeft,
     UnsupportedService,
+    WindowNotFound,
     PlatformError(PlatformError),
 }
 
@@ -44,6 +45,21 @@ impl std::error::Error for RuntimeError {}
 
 impl From<PlatformError> for RuntimeError {
     fn from(e: PlatformError) -> Self { RuntimeError::PlatformError(e) }
+}
+
+fn builtin_bridge_error_message(err: &RuntimeError) -> &'static str {
+    match err {
+        RuntimeError::UnsupportedService => "Native service is not available on this platform",
+        RuntimeError::WindowNotFound => "Window was not found",
+        RuntimeError::WindowLimitReached => "Window limit reached",
+        RuntimeError::DuplicateWindowLabel => "Window id or label already exists",
+        RuntimeError::MissingWindowSource => "Window source is missing",
+        RuntimeError::WindowSourceTooLarge => "Window source is too large",
+        RuntimeError::InvalidWindowOptions => "Window options are invalid",
+        RuntimeError::DuplicateWindowId => "Window id already exists",
+        RuntimeError::NoSpaceLeft => "Native response buffer is too small",
+        _ => "Native command failed",
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -110,14 +126,13 @@ pub struct Runtime {
     pub frame_index: u64,
     pub command_count: usize,
     pub dirty_regions: Vec<RectF>,
+    pub last_invalidation_reason: InvalidationReason,
     pub last_diagnostics: FrameDiagnostics,
     pub loaded_source: Option<WebViewSource>,
     pub options: Options,
     automation_windows: Vec<snapshot::Window>,
 }
 
-// Manual Clone for Runtime: Box<dyn PlatformHost> cannot be Clone,
-// so we provide a limited clone that replaces the host with NullPlatform.
 impl Clone for Runtime {
     fn clone(&self) -> Self {
         Self {
@@ -132,6 +147,7 @@ impl Clone for Runtime {
             invalidated: self.invalidated,
             frame_index: self.frame_index,
             command_count: self.command_count,
+            last_invalidation_reason: self.last_invalidation_reason,
             dirty_regions: self.dirty_regions.clone(),
             last_diagnostics: self.last_diagnostics,
             loaded_source: self.loaded_source.clone(),
@@ -158,7 +174,7 @@ impl Runtime {
             host: Box::new(host), surface,
             windows: Vec::with_capacity(MAX_WINDOWS),
             next_window_id: 2, invalidated: true,
-            frame_index: 0, command_count: 0,
+            frame_index: 0, command_count: 0, last_invalidation_reason: InvalidationReason::Startup,
             dirty_regions: Vec::with_capacity(8),
             last_diagnostics: FrameDiagnostics::default(),
             loaded_source: None, options,
@@ -166,14 +182,13 @@ impl Runtime {
         }
     }
 
-    /// Construct with a pre-boxed host (avoids monomorphisation bloat).
     pub fn from_boxed(host: Box<dyn PlatformHost>, options: Options) -> Self {
         let surface = host.surface();
         Self {
             host, surface,
             windows: Vec::with_capacity(MAX_WINDOWS),
             next_window_id: 2, invalidated: true,
-            frame_index: 0, command_count: 0,
+            frame_index: 0, command_count: 0, last_invalidation_reason: InvalidationReason::Startup,
             dirty_regions: Vec::with_capacity(8),
             last_diagnostics: FrameDiagnostics::default(),
             loaded_source: None, options,
@@ -181,14 +196,27 @@ impl Runtime {
         }
     }
 
-    pub fn invalidate(&mut self) { self.invalidated = true; }
+    pub fn invalidate(&mut self) { self.invalidate_for(InvalidationReason::State, None); }
+
+    pub fn invalidate_for(&mut self, reason: InvalidationReason, dirty_region: Option<RectF>) {
+        self.invalidated = true;
+        self.last_invalidation_reason = reason;
+        if let Some(region) = dirty_region {
+            if self.dirty_regions.len() < 8 {
+                self.dirty_regions.push(region);
+            }
+        }
+    }
 
     pub fn run(&mut self, app: &mut App) -> Result<(), RuntimeError> {
+        self.log("runtime.init", "runtime initialized", &[]);
+        self.host.configure_security_policy(&self.options.security);
         let mut events: Vec<PlatformEvent> = Vec::new();
         self.host.run(&mut |event| { events.push(event); });
         for event in events {
             self.dispatch_platform_event(app, event)?;
         }
+        self.log("runtime.done", "runtime finished", &[]);
         Ok(())
     }
 
@@ -201,70 +229,134 @@ impl Runtime {
         if self.windows.len() >= MAX_WINDOWS { return Err(RuntimeError::WindowLimitReached); }
 
         let win_opts = create_opts.window_options(id, &create_opts.label);
-        let info = self.host.create_window(&win_opts)?;
+        let native_info = self.host.create_window(&win_opts)?;
+        self.host.load_window_webview(id, &source);
 
-        // Runtime tracks its own copy of the info, independent of the host.
-        let index = self.windows.len();
         let runtime_info = WindowInfo {
-            id, label: create_opts.label.clone(), title: info.title.clone(),
+            id, label: create_opts.label.clone(), title: native_info.title.clone(),
             frame: create_opts.default_frame, scale_factor: self.surface.scale_factor,
             open: true, focused: self.windows.is_empty(),
         };
         self.windows.push(RuntimeWindow { info: runtime_info.clone(), source: Some(source) });
         self.next_window_id = self.next_window_id.max(id + 1);
-        self.invalidated = true;
+        self.invalidate_for(InvalidationReason::Command, None);
         Ok(runtime_info)
+    }
+
+    pub fn list_windows<'a>(&self, output: &'a mut [WindowInfo]) -> &'a [WindowInfo] {
+        let count = output.len().min(self.windows.len());
+        for (i, w) in self.windows.iter().enumerate().take(count) {
+            output[i] = w.info.clone();
+        }
+        &output[..count]
     }
 
     pub fn list_windows_vec(&self) -> Vec<WindowInfo> { self.windows.iter().map(|w| w.info.clone()).collect() }
 
     pub fn focus_window(&mut self, window_id: WindowId) -> Result<(), RuntimeError> {
-        let index = self.find_window_index_by_id(window_id).ok_or(RuntimeError::MissingWindowSource)?;
+        let index = self.find_window_index_by_id(window_id).ok_or(RuntimeError::WindowNotFound)?;
         self.host.focus_window(window_id)?;
         self.set_focused_index(index);
-        self.invalidated = true;
+        self.invalidate_for(InvalidationReason::Command, None);
         Ok(())
     }
 
     pub fn close_window(&mut self, window_id: WindowId) -> Result<(), RuntimeError> {
-        let _ = self.find_window_index_by_id(window_id).ok_or(RuntimeError::MissingWindowSource)?;
+        let _ = self.find_window_index_by_id(window_id).ok_or(RuntimeError::WindowNotFound)?;
         self.host.close_window(window_id)?;
         if let Some(w) = self.windows.iter_mut().find(|w| w.info.id == window_id) {
             w.info.open = false; w.info.focused = false;
         }
-        self.invalidated = true;
+        self.invalidate_for(InvalidationReason::Command, None);
         Ok(())
     }
 
-    pub fn frame_diagnostics(&self) -> FrameDiagnostics { self.last_diagnostics }
+    pub fn emit_window_event(&mut self, window_id: WindowId, name: &str, detail_json: &str) -> Result<(), RuntimeError> {
+        if !json::is_valid_value(detail_json) { return Err(RuntimeError::InvalidJsonEventDetail); }
+        self.host.emit_window_event(window_id, name, detail_json);
+        Ok(())
+    }
+
+    pub fn respond_to_bridge(&mut self, source: &Source, response: &[u8]) -> Result<(), RuntimeError> {
+        self.complete_bridge_response(source.window_id, response);
+        Ok(())
+    }
 
     pub fn dispatch_platform_event(&mut self, app: &mut App, event: PlatformEvent) -> Result<(), RuntimeError> {
         match event {
             PlatformEvent::AppStart => {
+                self.log("app.start", "app started", &[trace::string_field("app", &app.name)]);
+                if let Some(ref registry) = self.options.extensions { registry.start_all(self.extension_context()); }
+                self.dispatch_event(app, Event::Lifecycle(LifecycleEvent::Start));
                 self.load_startup_windows(app);
-                self.invalidated = true;
+                self.invalidate_for(InvalidationReason::Startup, None);
             }
-            PlatformEvent::SurfaceResized(surface) => {
+            PlatformEvent::SurfaceResized(ref surface) => {
                 self.surface = surface.clone();
-                self.host.set_surface(surface);
-                self.invalidated = true;
+                self.host.set_surface(surface.clone());
+                if let Some(idx) = self.find_window_index_by_id(surface.id) {
+                    self.windows[idx].info.frame.width = surface.size.width;
+                    self.windows[idx].info.frame.height = surface.size.height;
+                    self.windows[idx].info.scale_factor = surface.scale_factor;
+                }
+                self.invalidate_for(InvalidationReason::SurfaceResize, Some(RectF::from_size(surface.size.clone())));
+                self.log("surface.resize", "surface updated", &[
+                    trace::float_field("width", surface.size.width as f64),
+                    trace::float_field("height", surface.size.height as f64),
+                    trace::float_field("scale", surface.scale_factor as f64),
+                ]);
             }
-            PlatformEvent::WindowFrameChanged(state) => { self.update_window_state(&state); self.invalidated = true; }
-            PlatformEvent::WindowFocused(id) => { if let Some(i) = self.find_window_index_by_id(id) { self.set_focused_index(i); } self.invalidated = true; }
-            PlatformEvent::BridgeMessage(msg) => { self.handle_bridge_message(&msg); self.invalidated = true; }
+            PlatformEvent::WindowFrameChanged(state) => {
+                self.update_window_state(&state);
+                if let Some(ref store) = self.options.window_state_store {
+                    let _ = store.save_window(&state);
+                }
+                self.invalidate_for(InvalidationReason::State, None);
+            }
+            PlatformEvent::WindowFocused(id) => {
+                if let Some(i) = self.find_window_index_by_id(id) { self.set_focused_index(i); }
+                self.invalidate_for(InvalidationReason::Command, None);
+            }
+            PlatformEvent::BridgeMessage(msg) => { self.handle_bridge_message(&msg); self.invalidate_for(InvalidationReason::Command, None); }
             PlatformEvent::FrameRequested => { self.frame(app)?; }
-            PlatformEvent::TrayAction(_) => {}
-            PlatformEvent::AppShutdown => {}
+            PlatformEvent::TrayAction(item_id) => {
+                self.log("tray.action", "tray item selected", &[trace::uint_field("item_id", item_id as u64)]);
+                self.dispatch_event(app, Event::Command(CommandEvent { name: "tray.action".to_string() }));
+            }
+            PlatformEvent::AppShutdown => {
+                self.dispatch_event(app, Event::Lifecycle(LifecycleEvent::Stop));
+                if let Some(ref registry) = self.options.extensions { registry.stop_all(self.extension_context()); }
+                self.log("app.stop", "app stopped", &[trace::string_field("app", &app.name)]);
+            }
         }
         Ok(())
     }
 
+    pub fn dispatch_event(&mut self, app: &mut App, event: Event) {
+        self.log("runtime.event", "", &[trace::string_field("event", event.name())]);
+        if let Err(e) = app.event(self, &event) {
+            self.log("runtime.event_failed", &format!("{:?}", e), &[]);
+        }
+        if let Event::Command(ref cmd) = event {
+            if let Some(ref registry) = self.options.extensions {
+                registry.dispatch_command(self.extension_context(), extensions::Command { name: cmd.name.clone(), target: None });
+            }
+            self.invalidate_for(InvalidationReason::Command, None);
+        }
+    }
+
     pub fn frame(&mut self, _app: &mut App) -> Result<(), RuntimeError> {
+        let start = std::time::Instant::now();
         self.consume_automation_command();
         if !self.invalidated { return Ok(()); }
         self.publish_automation();
         self.frame_index += 1;
-        self.last_diagnostics = FrameDiagnostics { frame_index: self.frame_index, command_count: self.command_count, dirty_region_count: self.dirty_regions.len(), duration_ns: 0 };
+        self.last_diagnostics = FrameDiagnostics {
+            frame_index: self.frame_index,
+            command_count: self.command_count,
+            dirty_region_count: self.dirty_regions.len(),
+            duration_ns: start.elapsed().as_nanos() as u64,
+        };
         self.command_count = 0;
         self.dirty_regions.clear();
         self.invalidated = false;
@@ -284,10 +376,11 @@ impl Runtime {
         snapshot::Input { windows: self.automation_windows.clone(), diagnostics: snapshot::Diagnostics { frame_index: self.last_diagnostics.frame_index, command_count: self.last_diagnostics.command_count }, source: self.loaded_source.clone() }
     }
 
+    pub fn frame_diagnostics(&self) -> FrameDiagnostics { self.last_diagnostics }
+
     fn load_startup_windows(&mut self, app: &App) {
         let source = app.web_view_source();
-        self.loaded_source = Some(source);
-        self.host.load_webview(self.loaded_source.as_ref().unwrap());
+        self.loaded_source = Some(source.clone());
         let count = self.host.app_info().startup_window_count();
         for index in 0..count {
             let window = self.host.app_info().resolved_startup_window(index);
@@ -301,15 +394,31 @@ impl Runtime {
                     open: true,
                     focused: index == 0,
                 };
-                self.windows.push(RuntimeWindow { info: info.clone(), source: self.loaded_source.clone() });
+                self.windows.push(RuntimeWindow { info: info.clone(), source: Some(source.clone()) });
                 self.next_window_id = self.next_window_id.max(window.id + 1);
             }
+            if index > 0 {
+                let _ = self.host.create_window(&window);
+            }
+            self.host.load_window_webview(window.id, &source);
         }
+        self.log("webview.load", "loaded webview source", &[
+            trace::string_field("kind", match source.kind { platform::WebViewSourceKind::Html => "html", platform::WebViewSourceKind::Url => "url", platform::WebViewSourceKind::Assets => "assets" }),
+            trace::uint_field("bytes", source.bytes.len() as u64),
+        ]);
     }
 
     fn reload_windows(&mut self, app: &App) {
         let source = app.web_view_source();
-        self.loaded_source = Some(source);
+        self.loaded_source = Some(source.clone());
+        if self.windows.is_empty() {
+            self.host.load_webview(&source);
+            return;
+        }
+        for w in &self.windows {
+            let window_source = w.source.as_ref().unwrap_or(&source);
+            self.host.load_window_webview(w.info.id, window_source);
+        }
     }
 
     fn handle_bridge_message(&mut self, message: &BridgeMessage) {
@@ -321,8 +430,18 @@ impl Runtime {
         };
         let mut response_buffer = vec![0u8; bridge::MAX_RESPONSE_BYTES];
         let source = Source { origin: message.origin.clone(), window_id: message.window_id };
-        let response_len = dispatcher.dispatch(&message.bytes, source, &mut response_buffer);
-        self.host.complete_window_bridge(message.window_id, &response_buffer[..response_len]);
+
+        if let Some(async_handler) = dispatcher.async_registry.find(&message.bytes) {
+            // Async path — not fully implemented, fall through to sync
+            let _ = async_handler;
+        }
+
+        let response_len = dispatcher.dispatch(&message.bytes, source.clone(), &mut response_buffer);
+        self.complete_bridge_response(message.window_id, &response_buffer[..response_len]);
+        self.log("bridge.dispatch", "bridge request handled", &[
+            trace::uint_field("request_bytes", message.bytes.len() as u64),
+            trace::uint_field("response_bytes", response_len as u64),
+        ]);
     }
 
     fn complete_bridge_response(&mut self, window_id: WindowId, response: &[u8]) {
@@ -366,7 +485,7 @@ impl Runtime {
             let mut result_buffer = vec![0u8; 4096];
             match self.create_window_from_json(&request.payload, &mut result_buffer) {
                 Ok(len) => { let s = std::str::from_utf8(&result_buffer[..len]).unwrap_or("{}"); bridge::write_success_response(response_buffer, &request.id, s) }
-                Err(e) => { let msg = format!("{:?}", e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, &msg) }
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
             }
         } else if request.command == "zero-native.window.list" {
             let mut result_buffer = vec![0u8; 8192];
@@ -374,13 +493,95 @@ impl Runtime {
                 Ok(len) => { let s = std::str::from_utf8(&result_buffer[..len]).unwrap_or("[]"); bridge::write_success_response(response_buffer, &request.id, s) }
                 Err(_) => bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, "Failed to list windows")
             }
+        } else if request.command == "zero-native.window.focus" {
+            let mut result_buffer = vec![0u8; 4096];
+            match self.focus_window_from_json(&request.payload, &mut result_buffer) {
+                Ok(len) => { let s = std::str::from_utf8(&result_buffer[..len]).unwrap_or("{}"); bridge::write_success_response(response_buffer, &request.id, s) }
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
+            }
+        } else if request.command == "zero-native.window.close" {
+            let mut result_buffer = vec![0u8; 4096];
+            match self.close_window_from_json(&request.payload, &mut result_buffer) {
+                Ok(len) => { let s = std::str::from_utf8(&result_buffer[..len]).unwrap_or("{}"); bridge::write_success_response(response_buffer, &request.id, s) }
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
+            }
         } else {
             bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::UnknownCommand, "Unknown window command")
         }
     }
 
-    fn dispatch_dialog_bridge_command(&self, request: &Request, response_buffer: &mut [u8]) -> usize {
-        bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, "Dialog API is not available")
+    fn dispatch_dialog_bridge_command(&mut self, request: &Request, response_buffer: &mut [u8]) -> usize {
+        if request.command == "zero-native.dialog.openFile" {
+            match self.open_file_dialog_from_json(&request.payload) {
+                Ok(result_json) => bridge::write_success_response(response_buffer, &request.id, &result_json),
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
+            }
+        } else if request.command == "zero-native.dialog.saveFile" {
+            match self.save_file_dialog_from_json(&request.payload) {
+                Ok(result_json) => bridge::write_success_response(response_buffer, &request.id, &result_json),
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
+            }
+        } else if request.command == "zero-native.dialog.showMessage" {
+            match self.show_message_dialog_from_json(&request.payload) {
+                Ok(result_json) => bridge::write_success_response(response_buffer, &request.id, &result_json),
+                Err(e) => { let msg = builtin_bridge_error_message(&e); bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::InternalError, msg) }
+            }
+        } else {
+            bridge::write_error_response(response_buffer, &request.id, bridge::ErrorCode::UnknownCommand, "Unknown dialog command")
+        }
+    }
+
+    fn open_file_dialog_from_json(&mut self, payload: &str) -> Result<String, RuntimeError> {
+        let mut storage = Vec::new();
+        let title = json::string_field(payload, "title", &mut storage).unwrap_or("").to_string();
+        let default_path = json::string_field(payload, "defaultPath", &mut storage).unwrap_or("").to_string();
+        let allow_dirs = json::bool_field(payload, "allowDirectories").unwrap_or(false);
+        let allow_multi = json::bool_field(payload, "allowMultiple").unwrap_or(false);
+        let mut dialog_buffer = vec![0u8; platform::MAX_DIALOG_PATHS_BYTES];
+        let result = self.host.show_open_dialog(
+            &platform::OpenDialogOptions { title, default_path, filters: Vec::new(), allow_directories: allow_dirs, allow_multiple: allow_multi },
+            &mut dialog_buffer,
+        )?;
+        if result.count == 0 { Ok("null".to_string()) }
+        else {
+            let paths: Vec<String> = result.paths.split('\n').filter(|s| !s.is_empty()).map(|s| json::write_json_string(s)).collect();
+            Ok(format!("[{}]", paths.join(",")))
+        }
+    }
+
+    fn save_file_dialog_from_json(&mut self, payload: &str) -> Result<String, RuntimeError> {
+        let mut storage = Vec::new();
+        let title = json::string_field(payload, "title", &mut storage).unwrap_or("").to_string();
+        let default_path = json::string_field(payload, "defaultPath", &mut storage).unwrap_or("").to_string();
+        let default_name = json::string_field(payload, "defaultName", &mut storage).unwrap_or("").to_string();
+        let mut dialog_buffer = vec![0u8; platform::MAX_DIALOG_PATH_BYTES];
+        let path = self.host.show_save_dialog(
+            &platform::SaveDialogOptions { title, default_path, default_name, filters: Vec::new() },
+            &mut dialog_buffer,
+        )?;
+        match path { Some(p) => Ok(json::write_json_string(&p)), None => Ok("null".to_string()) }
+    }
+
+    fn show_message_dialog_from_json(&mut self, payload: &str) -> Result<String, RuntimeError> {
+        let mut storage = Vec::new();
+        let title = json::string_field(payload, "title", &mut storage).unwrap_or("").to_string();
+        let message = json::string_field(payload, "message", &mut storage).unwrap_or("").to_string();
+        let informative = json::string_field(payload, "informativeText", &mut storage).unwrap_or("").to_string();
+        let primary = json::string_field(payload, "primaryButton", &mut storage).unwrap_or("OK").to_string();
+        let secondary = json::string_field(payload, "secondaryButton", &mut storage).unwrap_or("").to_string();
+        let tertiary = json::string_field(payload, "tertiaryButton", &mut storage).unwrap_or("").to_string();
+        let style_str = json::string_field(payload, "style", &mut storage).unwrap_or("info");
+        let style = match style_str {
+            "warning" => MessageDialogStyle::Warning,
+            "critical" => MessageDialogStyle::Critical,
+            _ => MessageDialogStyle::Info,
+        };
+        let result = self.host.show_message_dialog(&platform::MessageDialogOptions {
+            style, title, message, informative_text: informative,
+            primary_button: primary, secondary_button: secondary, tertiary_button: tertiary,
+        })?;
+        let tag = match result { MessageDialogResult::Primary => "primary", MessageDialogResult::Secondary => "secondary", MessageDialogResult::Tertiary => "tertiary" };
+        Ok(json::write_json_string(tag))
     }
 
     fn create_window_from_json(&mut self, payload: &str, output: &mut [u8]) -> Result<usize, RuntimeError> {
@@ -391,18 +592,39 @@ impl Runtime {
         let height = json::number_field(payload, "height").unwrap_or(480.0);
         let x = json::number_field(payload, "x").unwrap_or(0.0);
         let y = json::number_field(payload, "y").unwrap_or(0.0);
+        let restore = json::bool_field(payload, "restoreState").unwrap_or(true);
         let source = json::string_field(payload, "url", &mut storage).map(|url| WebViewSource::url(url));
-        let info = self.create_window(WindowCreateOptions { id: 0, label, title, default_frame: RectF::new(x, y, width, height), source, ..Default::default() })?;
+        let info = self.create_window(WindowCreateOptions { id: 0, label, title, default_frame: RectF::new(x, y, width, height), restore_state: restore, source, ..Default::default() })?;
         Ok(write_window_json(&info, output))
+    }
+
+    fn focus_window_from_json(&mut self, payload: &str, output: &mut [u8]) -> Result<usize, RuntimeError> {
+        let mut storage = Vec::new();
+        let window_id = self.resolve_window_selector(payload, &mut storage)?;
+        self.focus_window(window_id)?;
+        let index = self.find_window_index_by_id(window_id).ok_or(RuntimeError::WindowNotFound)?;
+        Ok(write_window_json(&self.windows[index].info, output))
+    }
+
+    fn close_window_from_json(&mut self, payload: &str, output: &mut [u8]) -> Result<usize, RuntimeError> {
+        let mut storage = Vec::new();
+        let window_id = self.resolve_window_selector(payload, &mut storage)?;
+        let index = self.find_window_index_by_id(window_id).ok_or(RuntimeError::WindowNotFound)?;
+        let info = self.windows[index].info.clone();
+        self.close_window(window_id)?;
+        let mut closed_info = info;
+        closed_info.open = false;
+        closed_info.focused = false;
+        Ok(write_window_json(&closed_info, output))
     }
 
     fn resolve_window_selector(&self, payload: &str, storage: &mut Vec<u8>) -> Result<WindowId, RuntimeError> {
         if let Some(id) = json::unsigned_field::<WindowId>(payload, "id") { return Ok(id); }
         if let Some(label) = json::string_field(payload, "label", storage) {
-            let idx = self.find_window_index_by_label(label).ok_or(RuntimeError::MissingWindowSource)?;
+            let idx = self.find_window_index_by_label(label).ok_or(RuntimeError::WindowNotFound)?;
             return Ok(self.windows[idx].info.id);
         }
-        Err(RuntimeError::MissingWindowSource)
+        Err(RuntimeError::WindowNotFound)
     }
 
     fn write_window_list_json(&self, output: &mut [u8]) -> Result<usize, RuntimeError> {
@@ -428,7 +650,7 @@ impl Runtime {
         let server = match &self.options.automation { Some(s) => s.clone(), None => return };
         let command = match server.take_command() { Some(c) => c, None => return };
         match command.action {
-            automation::Action::Reload => { self.command_count += 1; self.invalidated = true; }
+            automation::Action::Reload => { self.command_count += 1; self.invalidate_for(InvalidationReason::Command, None); }
             automation::Action::Bridge => { self.handle_bridge_message(&BridgeMessage { bytes: command.value, origin: "zero://inline".into(), window_id: 1 }); }
             automation::Action::Wait => {}
         }
@@ -455,9 +677,17 @@ impl Runtime {
     fn log(&mut self, name: &str, message: &str, fields: &[trace::Field]) {
         if let Some(ref mut sink) = self.options.trace_sink {
             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as i128;
-            sink.write(trace::event_record(trace::Timestamp::from_nanoseconds(ts), trace::Level::Info, name, Some(message), fields.to_vec()));
+            sink.write(trace::event_record(trace::Timestamp::from_nanoseconds(ts), trace::Level::Info, name, if message.is_empty() { None } else { Some(message) }, fields.to_vec()));
         }
     }
+
+    fn extension_context(&self) -> RuntimeContext { RuntimeContext { platform_name: self.host.app_info().app_name.clone() } }
+}
+
+impl App {
+    pub fn start(&self, _runtime: &mut Runtime) -> Result<(), RuntimeError> { Ok(()) }
+    pub fn event(&self, _runtime: &mut Runtime, _event: &Event) -> Result<(), RuntimeError> { Ok(()) }
+    pub fn stop(&self, _runtime: &mut Runtime) -> Result<(), RuntimeError> { Ok(()) }
 }
 
 fn write_window_json(window: &WindowInfo, output: &mut [u8]) -> usize { write_window_json_to_writer(window, output) }
@@ -491,6 +721,11 @@ impl TestHarness {
         self.runtime.dispatch_platform_event(app, PlatformEvent::AppStart)?;
         self.runtime.dispatch_platform_event(app, PlatformEvent::SurfaceResized(self.runtime.surface.clone()))?;
         self.runtime.dispatch_platform_event(app, PlatformEvent::FrameRequested)?;
+        Ok(())
+    }
+
+    pub fn stop(&mut self, app: &mut App) -> Result<(), RuntimeError> {
+        self.runtime.dispatch_platform_event(app, PlatformEvent::AppShutdown)?;
         Ok(())
     }
 }
@@ -550,7 +785,6 @@ mod tests {
             bytes: r#"{"id":"1","command":"zero-native.window.create","payload":{"label":"palette","title":"Palette","width":320,"height":240}}"#.into(),
             origin: "zero://inline".into(), window_id: 1,
         })).unwrap();
-        // Verify through NullPlatform downcast
         let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
         assert!(np.last_bridge_response().contains("\"ok\":true"));
     }
@@ -564,6 +798,64 @@ mod tests {
         harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
             bytes: r#"{"id":"1","command":"zero-native.window.list","payload":null}"#.into(),
             origin: "https://evil.com".into(), window_id: 1,
+        })).unwrap();
+        let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
+        assert!(np.last_bridge_response().contains("\"permission_denied\""));
+    }
+
+    #[test]
+    fn runtime_denies_dialog_bridge_by_default() {
+        let mut harness = TestHarness::new(Surface::default());
+        let mut app = App::simple("test", WebViewSource::html("hi"));
+        harness.start(&mut app).unwrap();
+        harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
+            bytes: r#"{"id":"1","command":"zero-native.dialog.showMessage","payload":{"message":"Hello"}}"#.into(),
+            origin: "zero://inline".into(), window_id: 1,
+        })).unwrap();
+        let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
+        assert!(np.last_bridge_response().contains("\"permission_denied\""));
+    }
+
+    #[test]
+    fn runtime_emit_window_event_validates_json() {
+        let mut harness = TestHarness::new(Surface::default());
+        let result = harness.runtime.emit_window_event(1, "test", "not json");
+        assert!(matches!(result, Err(RuntimeError::InvalidJsonEventDetail)));
+    }
+
+    #[test]
+    fn runtime_window_bridge_focus_close() {
+        let mut harness = TestHarness::new(Surface::default());
+        harness.runtime.options.js_window_api = true;
+        let mut app = App::simple("test", WebViewSource::html("hi"));
+        harness.start(&mut app).unwrap();
+        // Create a window via bridge
+        harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
+            bytes: r#"{"id":"1","command":"zero-native.window.create","payload":{"label":"palette","title":"Palette"}}"#.into(),
+            origin: "zero://inline".into(), window_id: 1,
+        })).unwrap();
+        // Focus it
+        harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
+            bytes: r#"{"id":"2","command":"zero-native.window.focus","payload":{"label":"palette"}}"#.into(),
+            origin: "zero://inline".into(), window_id: 1,
+        })).unwrap();
+        assert!(harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap().last_bridge_response().contains("\"focused\":true"));
+        // Close it
+        harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
+            bytes: r#"{"id":"3","command":"zero-native.window.close","payload":{"label":"palette"}}"#.into(),
+            origin: "zero://inline".into(), window_id: 1,
+        })).unwrap();
+        assert!(harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap().last_bridge_response().contains("\"open\":false"));
+    }
+
+    #[test]
+    fn runtime_bridge_permission_denied_before_unknown() {
+        let mut harness = TestHarness::new(Surface::default());
+        let mut app = App::simple("test", WebViewSource::html("hi"));
+        harness.start(&mut app).unwrap();
+        harness.runtime.dispatch_platform_event(&mut app, PlatformEvent::BridgeMessage(BridgeMessage {
+            bytes: r#"{"id":"1","command":"native.ping","payload":null}"#.into(),
+            origin: "zero://inline".into(), window_id: 1,
         })).unwrap();
         let np = harness.runtime.host.as_any().downcast_ref::<NullPlatform>().unwrap();
         assert!(np.last_bridge_response().contains("\"permission_denied\""));
