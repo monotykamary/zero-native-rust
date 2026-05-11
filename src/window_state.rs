@@ -83,4 +83,26 @@ mod tests {
         assert!(text.contains("\\\"quotes\\\"")); // escaped quotes in output
         assert!(text.contains("\\n")); // escaped newline in output
     }
+
+    #[test]
+    fn window_state_write_multiple_records_has_ids_and_labels() {
+        let windows = vec![
+            WindowState {
+                id: 1, label: "main".into(), title: String::new(),
+                frame: RectF::new(10.0, 20.0, 800.0, 600.0),
+                scale_factor: 2.0, open: true, focused: true, maximized: false, fullscreen: false,
+            },
+            WindowState {
+                id: 2, label: "settings".into(), title: String::new(),
+                frame: RectF::new(30.0, 40.0, 500.0, 400.0),
+                scale_factor: 1.0, open: false, focused: false, maximized: false, fullscreen: false,
+            },
+        ];
+        let text = write_windows(&windows);
+        assert!(text.contains(".id = 1"));
+        assert!(text.contains(".id = 2"));
+        assert!(text.contains(".label = \"main\""));
+        assert!(text.contains(".label = \"settings\""));
+        assert!(text.contains(".scale = 2"));
+    }
 }

@@ -73,4 +73,15 @@ mod tests {
         assert!(Command::parse("bridge").is_err()); // bridge requires payload
         assert!(Command::parse("unknown").is_err());
     }
+
+    #[test]
+    fn command_line_formatting() {
+        // Verify the command format matches what the Zig automation server expects
+        let reload = Command::parse("reload").unwrap();
+        assert_eq!(Action::Reload, reload.action);
+        assert!(reload.value.is_empty());
+
+        let wait = Command::parse("wait frame").unwrap();
+        assert_eq!("frame", wait.value);
+    }
 }

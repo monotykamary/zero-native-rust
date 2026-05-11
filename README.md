@@ -8,20 +8,20 @@ This is a Rust port of [zero-native](https://github.com/vercel-labs/zero-native)
 
 ```
 ┌─────────────────────────────────────┐
-│  Rust runtime (bridge, security,     │
-│  window mgmt, extensions, events)    │
+│  Rust runtime (bridge, security,    │
+│  window mgmt, extensions, events)   │
 │  ~2.8k lines of Rust                │
 └──────────────┬──────────────────────┘
                │ extern "C" via bindgen
                │ (23 functions on macOS, 19 on Linux, 16 on Windows)
                │ + 2-3 callback function pointers
                ▼
-┌─────────────────────────────────────┐
-│  C/ObjC/C++ platform hosts          │
-│  (carried over from the Zig project) │
-│  appkit_host.m  •  gtk_host.c        │
+┌───────────────────────────────────────┐
+│  C/ObjC/C++ platform hosts            │
+│  (carried over from the Zig project)  │
+│  appkit_host.m  •  gtk_host.c         │
 │  cef_host.mm    •  webview2_host.cpp  │
-└─────────────────────────────────────┘
+└───────────────────────────────────────┘
 ```
 
 ## Quick start

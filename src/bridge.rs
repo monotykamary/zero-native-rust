@@ -365,4 +365,58 @@ mod tests {
         assert!(policy.allows("native.ping", "zero://inline"));
         assert!(!policy.allows("native.ping", "https://example.com"));
     }
+
+    #[test]
+    fn policy_allows_wildcard_origin() {
+        let policy = Policy {
+            enabled: true,
+            permissions: vec![],
+            commands: vec![CommandPolicy {
+                name: "native.anywhere".into(),
+                permissions: vec![],
+                origins: vec!["*".into()],
+            }],
+        };
+        assert!(policy.allows("native.anywhere", "https://example.com"));
+    }
+
+    #[test]
+    fn policy_denied_by_permission() {
+        let policy = Policy {
+            enabled: true,
+            permissions: vec![], // no filesystem grant
+            commands: vec![CommandPolicy {
+                name: "native.secure".into(),
+                permissions: vec!["filesystem".into()],
+                origins: vec!["zero://app".into()],
+            }],
+        };
+        assert!(!policy.allows("native.secure", "zero://app"));
+    }
+
+    #[test]
+    fn parse_request_with_payload() {
+        let req = Request::parse(
+            "{\"id\":\"1\",\"command\":\"native.ping\",\"payload\":{\"text\":\"hello\",\"count\":2}}",
+        ).unwrap();
+        assert_eq!("1", req.id);
+        assert_eq!("native.ping", req.command);
+        assert!(req.payload.contains("hello"));
+    }
+
+    #[test]
+    fn dispatcher_reports_permission_denied_before_unknown() {
+        let dispatcher = Dispatcher {
+            policy: Policy::default(), // disabled
+            registry: Registry { handlers: vec![] },
+        };
+        let mut buf = [0u8; 256];
+        let len = dispatcher.dispatch(
+            "{\"id\":\"1\",\"command\":\"native.ping\",\"payload\":null}",
+            Source::default(),
+            &mut buf,
+        );
+        let s = std::str::from_utf8(&buf[..len]).unwrap();
+        assert!(s.contains("\"permission_denied\""));
+    }
 }

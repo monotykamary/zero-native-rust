@@ -164,6 +164,29 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+pub fn validate_url(url: &str) -> Result<(), ValidationError> {
+    let prefix_len = if url.starts_with("https://") {
+        8
+    } else if url.starts_with("http://") {
+        7
+    } else {
+        return Err(ValidationError::InvalidUrl);
+    };
+    if url.len() == prefix_len {
+        return Err(ValidationError::InvalidUrl);
+    }
+    let rest = &url[prefix_len..];
+    let slash_idx = rest.find('/').unwrap_or(rest.len());
+    let host = &rest[..slash_idx];
+    if host.is_empty() {
+        return Err(ValidationError::InvalidUrl);
+    }
+    if host.contains('\0') || host.contains(' ') || host.contains('\t') || host.contains('\n') || host.contains('\r') {
+        return Err(ValidationError::InvalidUrl);
+    }
+    Ok(())
+}
+
 pub fn validate_windows(windows: &[Window]) -> Result<(), ValidationError> {
     for (i, w) in windows.iter().enumerate() {
         if w.label.is_empty() {
@@ -232,5 +255,53 @@ mod tests {
             Window { label: "main".into(), ..Default::default() },
         ];
         assert!(validate_windows(&windows).is_ok());
+    }
+
+    #[test]
+    fn validate_name_accepts_and_rejects() {
+        assert!(validate_name("Example App").is_ok());
+        assert!(validate_name("Apache-2.0").is_ok());
+        assert!(validate_name("").is_err());
+        assert!(validate_name(".").is_err());
+        assert!(validate_name("..").is_err());
+        assert!(validate_name("bad/name").is_err());
+        assert!(validate_name("bad\\name").is_err());
+    }
+
+    #[test]
+    fn validate_url_accepts_and_rejects() {
+        assert!(validate_url("https://example.com").is_ok());
+        assert!(validate_url("http://example.com/path").is_ok());
+        assert!(validate_url("ftp://example.com").is_err());
+        assert!(validate_url("https://").is_err());
+        assert!(validate_url("https:///path").is_err());
+    }
+
+    #[test]
+    fn app_id_rejects_various_invalid_forms() {
+        assert!(validate_app_id("", true).is_err());
+        assert!(validate_app_id("example", true).is_err()); // no dots
+        assert!(validate_app_id("Com.example.app", true).is_err()); // uppercase
+        assert!(validate_app_id("com/example/app", true).is_err()); // slashes
+        assert!(validate_app_id(".com.example", true).is_err()); // leading dot
+        assert!(validate_app_id("com.example.", true).is_err()); // trailing dot
+    }
+
+    #[test]
+    fn windows_reject_empty_labels_and_bad_dimensions() {
+        let bad_label = vec![Window { label: "".into(), ..Default::default() }];
+        assert!(validate_windows(&bad_label).is_err());
+
+        let bad_dims = vec![Window { label: "main".into(), width: 0.0, height: -1.0, ..Default::default() }];
+        assert!(validate_windows(&bad_dims).is_err());
+    }
+
+    #[test]
+    fn version_string_with_pre_and_build() {
+        let v = Version { major: 1, minor: 2, patch: 3, pre: Some("beta.1".into()), build: Some("20260506".into()) };
+        assert_eq!("1.2.3-beta.1+20260506", v.to_string());
+
+        let v2 = Version { major: 1, minor: 0, patch: 0, pre: None, build: None };
+        assert_eq!("1.0.0", v2.to_string());
     }
 }

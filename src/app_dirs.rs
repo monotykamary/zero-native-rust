@@ -268,4 +268,43 @@ mod tests {
         assert!(resolve_one(&app, Platform::IOS, &env, DirKind::Config).is_err());
         assert!(resolve_one(&app, Platform::Android, &env, DirKind::Config).is_err());
     }
+
+    #[test]
+    fn temp_fallback_is_platform_specific() {
+        let app = AppInfo { name: "demo".into(), organization: None, qualifier: None };
+        let env = Env { home: Some("/home/a".into()), ..Default::default() };
+        let temp = resolve_one(&app, Platform::Linux, &env, DirKind::Temp).unwrap();
+        assert!(temp.contains("/tmp"));
+
+        let env2 = Env { home: Some("/home/a".into()), tmpdir: Some("/custom".into()), ..Default::default() };
+        let temp2 = resolve_one(&app, Platform::Linux, &env2, DirKind::Temp).unwrap();
+        assert!(temp2.contains("/custom"));
+    }
+
+    #[test]
+    fn windows_config_uses_appdata_roaming() {
+        let env = Env {
+            app_data: Some("C:\\Users\\alice\\AppData\\Roaming".into()),
+            local_app_data: Some("C:\\Users\\alice\\AppData\\Local".into()),
+            ..Default::default()
+        };
+        let app = AppInfo { name: "Demo".into(), organization: None, qualifier: None };
+        let config = resolve_one(&app, Platform::Windows, &env, DirKind::Config).unwrap();
+        assert!(config.contains("Roaming"));
+        let cache = resolve_one(&app, Platform::Windows, &env, DirKind::Cache).unwrap();
+        assert!(cache.contains("Cache"));
+    }
+
+    #[test]
+    fn windows_missing_env_errors() {
+        let env = Env {
+            local_app_data: Some("C:\\Local".into()),
+            ..Default::default()
+        };
+        let app = AppInfo { name: "demo".into(), organization: None, qualifier: None };
+        // config needs app_data, not just local_app_data
+        assert!(resolve_one(&app, Platform::Windows, &env, DirKind::Config).is_err());
+        // cache needs local_app_data, which we have
+        assert!(resolve_one(&app, Platform::Windows, &env, DirKind::Cache).is_ok());
+    }
 }

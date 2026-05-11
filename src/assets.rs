@@ -231,7 +231,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn infer_media_type_common() {
         assert_eq!(Some("image/png"), infer_media_type("icons/app.png"));
         assert_eq!(Some("font/woff2"), infer_media_type("fonts/inter.woff2"));
@@ -295,5 +294,13 @@ mod tests {
         assert_eq!("fonts/inter", manifest.find_by_bundle_path("fonts/inter.woff2").unwrap().id);
         assert!(manifest.find_by_id("missing").is_none());
         assert!(manifest.find_by_bundle_path("missing.png").is_none());
+    }
+
+    #[test]
+    fn path_normalization_rejects_invalid() {
+        let mut buf = [0u8; 64];
+        assert!(normalize_path(&mut buf, b"assets//icon.png").is_err());
+        assert!(normalize_path(&mut buf, b"assets/./icon.png").is_err());
+        assert!(normalize_path(&mut buf, b"assets/../icon.png").is_err());
     }
 }

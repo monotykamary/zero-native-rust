@@ -94,6 +94,38 @@ impl Target {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuApi {
+    Metal,
+    Vulkan,
+    Direct3D12,
+    Direct3D11,
+    OpenGL,
+    OpenGLES,
+    Software,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuStatus {
+    Available,
+    Missing,
+    Unsupported,
+    Unknown,
+}
+
+pub fn default_gpu_status(os: Platform, _display_server: DisplayServer, api: GpuApi) -> GpuStatus {
+    match api {
+        GpuApi::Metal => if os == Platform::MacOS || os == Platform::IOS { GpuStatus::Available } else { GpuStatus::Unsupported },
+        GpuApi::Vulkan => if os == Platform::Linux || os == Platform::Windows || os == Platform::Android { GpuStatus::Unknown } else { GpuStatus::Unsupported },
+        GpuApi::Direct3D12 | GpuApi::Direct3D11 => if os == Platform::Windows { GpuStatus::Unknown } else { GpuStatus::Unsupported },
+        GpuApi::OpenGLES => if os == Platform::Android || os == Platform::IOS { GpuStatus::Unknown } else { GpuStatus::Unsupported },
+        GpuApi::OpenGL => GpuStatus::Unknown, // available on most desktop
+        GpuApi::Software => GpuStatus::Available,
+        GpuApi::Unknown => GpuStatus::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +145,14 @@ mod tests {
             &vec![("DISPLAY".into(), ":0".into())], Platform::Linux));
         assert_eq!(DisplayServer::None, detect_display_server(&[], Platform::Linux));
         assert_eq!(DisplayServer::AppKit, detect_display_server(&[], Platform::MacOS));
+        assert_eq!(DisplayServer::Win32, detect_display_server(&[], Platform::Windows));
+        assert_eq!(DisplayServer::UIKit, detect_display_server(&[], Platform::IOS));
+    }
+
+    #[test]
+    fn gpu_status_per_platform() {
+        assert_eq!(GpuStatus::Available, default_gpu_status(Platform::MacOS, DisplayServer::AppKit, GpuApi::Metal));
+        assert_eq!(GpuStatus::Unsupported, default_gpu_status(Platform::Linux, DisplayServer::Wayland, GpuApi::Metal));
+        assert_eq!(GpuStatus::Available, default_gpu_status(Platform::MacOS, DisplayServer::AppKit, GpuApi::Software));
     }
 }
