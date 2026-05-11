@@ -59,7 +59,7 @@ impl Report {
         let mut out = String::new();
         out.push_str(&format!(
             "host: {:?}-{:?} display={:?}\n",
-            self.target.os, self.target.arch, self.display_server
+            self.target.platform, self.target.arch, self.display_server
         ));
         for check in &self.checks {
             let mark = match check.status {
@@ -124,7 +124,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
 fn build_report(options: &Options) -> Report {
     let target = platform_info::Target::current();
     let env_vars = collect_display_env();
-    let display_server = platform_info::detect_display_server(&env_vars, target.os);
+    let display_server = platform_info::detect_display_server(&env_vars, target.platform);
     let mut checks = Vec::new();
 
     if command_available(&["zig", "version"]) {
@@ -166,7 +166,7 @@ fn build_report(options: &Options) -> Report {
         }
     }
 
-    if target.os == platform_info::Platform::MacOS {
+    if target.platform == platform_info::Platform::MacOS {
         checks.push(Check {
             id: "webview-system".into(),
             status: Status::Available,
@@ -224,7 +224,7 @@ fn build_report(options: &Options) -> Report {
                 message: "iconutil was not found".into(),
             });
         }
-    } else if target.os == platform_info::Platform::Linux {
+    } else if target.platform == platform_info::Platform::Linux {
         if command_available(&["pkg-config", "--exists", "webkitgtk-6.0"]) {
             checks.push(Check {
                 id: "webview-system".into(),

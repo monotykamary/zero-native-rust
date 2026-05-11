@@ -389,7 +389,7 @@ pub fn print_diagnostic(result: &ValidationResult) {
         code,
         message: result.message.clone(),
         labels: vec![],
-        notes: vec![],
+        notes: vec![], suggestions: vec![],
     };
     println!("{}", diagnostics::format_short(&diagnostic));
 }

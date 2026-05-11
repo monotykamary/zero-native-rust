@@ -81,7 +81,7 @@ pub fn print_diagnostic(stats: &PackageStats) {
         },
         message: format!("created {:?} artifact at {}", stats.target, stats.path),
         labels: vec![],
-        notes: vec![],
+        notes: vec![], suggestions: vec![],
     };
     println!("{}", diagnostics::format_short(&diagnostic));
     if let Some(ref archive) = stats.archive_path {
